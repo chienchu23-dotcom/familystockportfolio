@@ -19,7 +19,7 @@
       }
     </script>
 
-    <!-- 2. Import Map (關鍵修正：讓瀏覽器知道 'react' 是什麼) -->
+    <!-- 2. Import Map -->
     <script type="importmap">
     {
       "imports": {
@@ -51,18 +51,15 @@
 
     <!-- 5. 主要程式碼 -->
     <script type="text/babel" data-type="module">
-        // --- 導入套件 (使用 Import Map 定義的名稱) ---
         import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
         import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid, Area, AreaChart } from 'recharts';
-        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock } from 'lucide-react';
+        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2 } from 'lucide-react';
         
-        // Firebase (保持 CDN 連結)
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
         import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, writeBatch, getDoc, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
         
-        // --- Firebase 設定 ---
         const firebaseConfig = {
             apiKey: "AIzaSyC2mxpOL7hzieOBCv_7rPI6E-xpCe6DznA",
             authDomain: "familystockprofolio.firebaseapp.com",
@@ -76,9 +73,8 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = "github-web-version"; // 定義一個固定的 appId
+        const appId = "github-web-version";
 
-        // --- 元件定義 ---
         const Card = ({ children, className = "" }) => (
           <div className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${className}`}>
             {children}
@@ -100,18 +96,19 @@
           };
           return (
             <button onClick={onClick} className={`${baseStyle} ${variants[variant]} ${className}`} disabled={disabled || isLoading}>
-              {isLoading ? <RefreshCw size={18} className="animate-spin" /> : children}
+              {isLoading ? <Loader2 size={18} className="animate-spin" /> : children}
             </button>
           );
         };
 
-        const Input = ({ label, value, onChange, type = "text", placeholder, className = "" }) => (
+        const Input = ({ label, value, onChange, onBlur, type = "text", placeholder, className = "" }) => (
           <div className={`flex flex-col gap-1 ${className}`}>
             {label && <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{label}</label>}
             <input
               type={type}
               value={value}
               onChange={onChange}
+              onBlur={onBlur}
               placeholder={placeholder}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-slate-800"
             />
@@ -137,12 +134,10 @@
           );
         };
 
-        // --- 格式化工具 ---
         const formatCurrency = (value) => new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(value);
         const formatNumber = (value) => new Intl.NumberFormat('zh-TW').format(value);
         const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1'];
 
-        // --- 主程式 ---
         function App() {
           const [user, setUser] = useState(null);
           const [activeTab, setActiveTab] = useState('overview');
@@ -150,7 +145,6 @@
           const [allHoldings, setAllHoldings] = useState([]); 
           const [loading, setLoading] = useState(true);
            
-          // Security States
           const [isLocked, setIsLocked] = useState(true);
           const [hasPin, setHasPin] = useState(false);
           const [pinInput, setPinInput] = useState("");
@@ -158,27 +152,24 @@
           const [isSettingsOpen, setIsSettingsOpen] = useState(false);
           const [newPin, setNewPin] = useState("");
            
-          // Year & Month Management
           const currentYear = new Date().getFullYear().toString();
           const [activeYear, setActiveYear] = useState(currentYear);
           const [activeMonth, setActiveMonth] = useState('all');
           const [availableYears, setAvailableYears] = useState([currentYear]);
 
-          // View Mode
           const [holdingViewMode, setHoldingViewMode] = useState('summary');
 
-          // Update Logic States
           const [updatingPrices, setUpdatingPrices] = useState(false);
           const [priceUpdateMsg, setPriceUpdateMsg] = useState("");
           const [lastUpdateTime, setLastUpdateTime] = useState(null);
 
-          // Modal States
           const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
           const [isAddHoldingOpen, setIsAddHoldingOpen] = useState(false);
           const [isImportOpen, setIsImportOpen] = useState(false);
           const [editingHolding, setEditingHolding] = useState(null);
 
-          // Form States
+          const [loadingStockInfo, setLoadingStockInfo] = useState(false);
+
           const [newMemberName, setNewMemberName] = useState("");
           const [holdingForm, setHoldingForm] = useState({
             memberId: "",
@@ -193,16 +184,13 @@
             year: currentYear
           });
 
-          // Import State
           const [importTargetMemberId, setImportTargetMemberId] = useState("");
           const [csvPreview, setCsvPreview] = useState([]);
           const fileInputRef = useRef(null);
 
-          // --- Auth & Data Fetching ---
           useEffect(() => {
             const initAuth = async () => {
               try {
-                // 這裡我們只使用匿名登入，因為沒有 Immersive 環境的 custom token
                 await signInAnonymously(auth);
               } catch (error) {
                 console.error("Auth error:", error);
@@ -213,11 +201,8 @@
             return () => unsubscribe();
           }, []);
 
-          // --- Security Check & Data Fetching ---
           useEffect(() => {
             if (!user) return;
-
-            // 1. Check for PIN
             const checkSecurity = async () => {
               try {
                 const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security');
@@ -237,7 +222,6 @@
             };
             checkSecurity();
 
-            // 2. Fetch Data
             const membersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'members');
             const unsubMembers = onSnapshot(membersRef, (snapshot) => {
               setMembers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -248,7 +232,6 @@
               const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
               setAllHoldings(data);
               setLoading(false);
-               
               const years = new Set(data.map(h => h.year || currentYear));
               years.add(currentYear);
               const sortedYears = Array.from(years).sort((a, b) => b.localeCompare(a));
@@ -260,11 +243,9 @@
                 if (maxTime > 0) setLastUpdateTime(new Date(maxTime * 1000));
               }
             });
-
             return () => { unsubMembers(); unsubHoldings(); };
           }, [user]);
 
-          // --- Filtered Data ---
           const holdings = useMemo(() => {
             let filtered = allHoldings.filter(h => {
               const yearMatch = (h.year || currentYear) === activeYear;
@@ -279,7 +260,6 @@
             return filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
           }, [allHoldings, activeYear, activeMonth, currentYear]);
 
-          // --- Aggregated Data ---
           const aggregatedHoldings = useMemo(() => {
             const groups = {};
             const sortedForCalc = [...holdings].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -299,14 +279,12 @@
                   txCount: 0
                 };
               }
-
               const group = groups[key];
               if (tx.currentPrice) group.currentPrice = tx.currentPrice;
               if (tx.dailyChangePercent) group.dailyChangePercent = tx.dailyChangePercent;
                
               const qty = tx.shares;
               const unitCost = tx.cost;
-
               if (qty > 0) {
                 group.shares += qty;
                 group.totalCost += (qty * unitCost);
@@ -315,20 +293,17 @@
                 const sellQty = Math.abs(qty);
                 const revenue = sellQty * unitCost;
                 const costBasis = sellQty * avgCost;
-                
                 group.realizedProfit += (revenue - costBasis);
                 group.shares -= sellQty;
                 group.totalCost -= costBasis;
               }
               group.txCount++;
             });
-
             return Object.values(groups).map(g => {
               const avgCost = g.shares > 0 ? g.totalCost / g.shares : 0;
               const marketValue = g.shares * g.currentPrice;
               const unrealizedProfit = marketValue - g.totalCost;
               const unrealizedProfitPercent = g.totalCost > 0 ? (unrealizedProfit / g.totalCost) * 100 : 0;
-               
               return {
                 ...g,
                 avgCost,
@@ -339,7 +314,7 @@
             }).filter(g => g.shares > 0 || g.realizedProfit !== 0);
           }, [holdings]);
 
-          // --- Trend Data Calculation ---
+          // --- Modified trendData to separate by member ---
           const trendData = useMemo(() => {
             const months = Array.from({ length: 12 }, (_, i) => i + 1);
             const yearTxs = allHoldings
@@ -347,12 +322,12 @@
               .sort((a, b) => new Date(a.date) - new Date(b.date));
 
             const priceMap = {};
-            allHoldings.forEach(h => {
-                if(h.currentPrice) priceMap[h.symbol] = h.currentPrice;
-            });
-
+            allHoldings.forEach(h => { if(h.currentPrice) priceMap[h.symbol] = h.currentPrice; });
+            
+            // Initialize portfolio structure: { memberId: { symbol: { shares, totalCost } } }
             let runningPortfolio = {}; 
-             
+            members.forEach(m => { runningPortfolio[m.id] = {}; });
+
             return months.map(month => {
               const monthlyTxs = yearTxs.filter(h => {
                  const m = parseInt(h.date?.split('-')[1] || 0, 10);
@@ -360,41 +335,47 @@
               });
 
               monthlyTxs.forEach(tx => {
+                  const mId = tx.memberId;
+                  if (!runningPortfolio[mId]) runningPortfolio[mId] = {};
+                  
                   const sym = tx.symbol;
-                  if(!runningPortfolio[sym]) runningPortfolio[sym] = { shares: 0, totalCost: 0 };
+                  if(!runningPortfolio[mId][sym]) runningPortfolio[mId][sym] = { shares: 0, totalCost: 0 };
+                  
                   const qty = tx.shares;
                   const unitCost = tx.cost;
+                  
                   if (qty > 0) {
-                      runningPortfolio[sym].shares += qty;
-                      runningPortfolio[sym].totalCost += (qty * unitCost);
+                      runningPortfolio[mId][sym].shares += qty;
+                      runningPortfolio[mId][sym].totalCost += (qty * unitCost);
                   } else {
                       const sellQty = Math.abs(qty);
-                      const currentAvg = runningPortfolio[sym].shares > 0 ? runningPortfolio[sym].totalCost / runningPortfolio[sym].shares : 0;
-                      runningPortfolio[sym].shares -= sellQty;
-                      runningPortfolio[sym].totalCost -= (sellQty * currentAvg);
+                      const currentData = runningPortfolio[mId][sym];
+                      const currentAvg = currentData.shares > 0 ? currentData.totalCost / currentData.shares : 0;
+                      currentData.shares -= sellQty;
+                      currentData.totalCost -= (sellQty * currentAvg);
                   }
               });
 
-              let monthMarketValue = 0;
-              let monthInvestedCost = 0;
-
-              Object.entries(runningPortfolio).forEach(([sym, data]) => {
-                  if (data.shares > 0) {
-                      monthInvestedCost += data.totalCost;
-                      const price = priceMap[sym] || data.totalCost/data.shares; 
-                      monthMarketValue += data.shares * price;
-                  }
+              // Construct data point for chart
+              const dataPoint = { name: `${month}月` };
+              
+              members.forEach(m => {
+                  let memberVal = 0;
+                  const mPortfolio = runningPortfolio[m.id] || {};
+                  
+                  Object.entries(mPortfolio).forEach(([sym, data]) => {
+                      if (data.shares > 0) {
+                          const price = priceMap[sym] || (data.totalCost / data.shares); 
+                          memberVal += data.shares * price;
+                      }
+                  });
+                  dataPoint[m.id] = Math.round(memberVal);
               });
 
-              return {
-                  name: `${month}月`,
-                  marketValue: Math.round(monthMarketValue),
-                  invested: Math.round(monthInvestedCost)
-              };
+              return dataPoint;
             });
-          }, [allHoldings, activeYear]);
+          }, [allHoldings, activeYear, members]);
 
-          // --- Helpers & APIs ---
           const fetchWithDualProxy = async (targetUrl) => {
             const encodedUrl = encodeURIComponent(targetUrl);
             const timestamp = Date.now();
@@ -425,6 +406,7 @@
                 price: result.regularMarketPrice,
                 change: result.regularMarketChange,
                 changePercent: result.regularMarketChangePercent,
+                name: result.shortName || result.longName, 
                 source: 'Yahoo'
               };
             }
@@ -437,17 +419,14 @@
             const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
             const data = await fetchWithDualProxy(twseUrl);
             const result = data?.msgArray?.find(item => item.c === code);
-
             if (result) {
               let price = parseFloat(result.z);
               if (isNaN(price)) price = parseFloat(result.b?.split('_')[0]);
               if (isNaN(price)) price = parseFloat(result.a?.split('_')[0]);
               if (isNaN(price)) price = parseFloat(result.y);
-
               const yesterday = parseFloat(result.y);
               const change = price - yesterday;
               const changePercent = (change / yesterday) * 100;
-
               return {
                 price: price,
                 change: change,
@@ -485,6 +464,27 @@
               result = await fetchStockByName(name);
             }
             return result;
+          };
+
+          const handleSymbolBlur = async () => {
+             const sym = holdingForm.symbol;
+             if (!sym || sym.trim() === '') return;
+             
+             setLoadingStockInfo(true);
+             try {
+                const quote = await fetchStockData(sym, "");
+                if (quote) {
+                    setHoldingForm(prev => ({
+                        ...prev,
+                        name: quote.name || prev.name,
+                        price: quote.price ? quote.price.toString() : prev.price
+                    }));
+                }
+             } catch (e) {
+                console.error("Auto-fill error", e);
+             } finally {
+                setLoadingStockInfo(false);
+             }
           };
 
           const handleUpdatePrices = async () => {
@@ -630,7 +630,6 @@
             return Object.entries(data).map(([name, value]) => ({ name, value }));
           }, [aggregatedHoldings, members]);
 
-          // --- Handlers ---
           const handleAddMember = async () => {
             if (!newMemberName.trim() || !user) return;
             await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'members'), {
@@ -718,7 +717,6 @@
               if (holdingForm.type === 'buy') { return p * s + f; } else { return p * s - f; }
           };
 
-          // --- Security Handlers ---
           const handleUnlock = () => {
             if (pinInput === storedPin) { setIsLocked(false); setPinInput(""); } else { alert("密碼錯誤，請重試"); }
           };
@@ -746,7 +744,6 @@
             } catch (e) { console.error(e); }
           };
 
-          // --- Render Components ---
           const renderMonthFilter = () => (
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
                <button onClick={() => setActiveMonth('all')} className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${activeMonth === 'all' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>全年</button>
@@ -809,13 +806,28 @@
                        {priceUpdateMsg && <div className={`text-xs text-center flex items-center justify-center gap-1 ${priceUpdateMsg.includes('失敗') ? 'text-red-500' : 'text-emerald-600'}`}><AlertCircle size={12} /> {priceUpdateMsg}</div>}
                     </div>
                     <Card className="p-6">
-                      <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Activity size={20} className="text-blue-500"/>{activeYear} 年度資產趨勢</h3>
+                      <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Activity size={20} className="text-blue-500"/>{activeYear} 年度資產趨勢 (堆疊圖)</h3>
                       <div className="h-64 w-full text-xs">
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={trendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                             <defs><linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3B82F6" stopOpacity={0.1}/><stop offset="95%" stopColor="#3B82F6" stopOpacity={0}/></linearGradient></defs>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0"/><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748B'}} /><YAxis hide domain={['auto', 'auto']} /><RechartsTooltip formatter={(value) => formatCurrency(value)} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}/><Legend verticalAlign="top" height={36}/>
-                            <Area type="monotone" dataKey="marketValue" name="總市值 (估)" stroke="#3B82F6" strokeWidth={2} fillOpacity={1} fill="url(#colorValue)" /><Line type="monotone" dataKey="invested" name="投入成本" stroke="#94A3B8" strokeWidth={2} strokeDasharray="5 5" dot={false} />
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0"/>
+                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748B'}} />
+                            <YAxis hide domain={['auto', 'auto']} />
+                            <RechartsTooltip formatter={(value) => formatCurrency(value)} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}/>
+                            <Legend verticalAlign="top" height={36}/>
+                            {members.map((member, index) => (
+                                <Area 
+                                    key={member.id}
+                                    type="monotone" 
+                                    dataKey={member.id} 
+                                    name={member.name} 
+                                    stackId="1" 
+                                    stroke={COLORS[index % COLORS.length]} 
+                                    fill={COLORS[index % COLORS.length]} 
+                                    fillOpacity={0.6}
+                                />
+                            ))}
                           </AreaChart>
                         </ResponsiveContainer>
                       </div>
@@ -910,7 +922,16 @@
                   <div className="flex bg-slate-100 rounded-lg p-1"><button className={`flex-1 py-1.5 rounded-md text-sm font-bold transition-all flex items-center justify-center gap-2 ${holdingForm.type === 'buy' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-400'}`} onClick={() => setHoldingForm({...holdingForm, type: 'buy'})}>買進 (Buy)</button><button className={`flex-1 py-1.5 rounded-md text-sm font-bold transition-all flex items-center justify-center gap-2 ${holdingForm.type === 'sell' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`} onClick={() => setHoldingForm({...holdingForm, type: 'sell'})}>賣出 (Sell)</button></div>
                   <div className="flex flex-col gap-1"><label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">持有成員</label><select value={holdingForm.memberId} onChange={e => setHoldingForm({...holdingForm, memberId: e.target.value})} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"><option value="" disabled>選擇成員</option>{members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></div>
                   <div className="flex gap-3"><div className="flex flex-col gap-1 w-full"><label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">交易日期</label><input type="date" value={holdingForm.date} onChange={e => { const newDate = e.target.value; const newYear = newDate ? newDate.split('-')[0] : holdingForm.year; setHoldingForm({ ...holdingForm, date: newDate, year: newYear }); }} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"/></div></div>
-                  <div className="grid grid-cols-2 gap-3"><Input label="股票代號" placeholder="例如：2330" value={holdingForm.symbol} onChange={e => setHoldingForm({...holdingForm, symbol: e.target.value})} /><Input label="股票名稱" placeholder="台積電" value={holdingForm.name} onChange={e => setHoldingForm({...holdingForm, name: e.target.value})} /></div>
+                  
+                  {/* Stock Symbol Input with Auto-fill */}
+                  <div className="grid grid-cols-2 gap-3">
+                     <div className="flex flex-col gap-1 relative">
+                        <Input label="股票代號" placeholder="例如：2330" value={holdingForm.symbol} onChange={e => setHoldingForm({...holdingForm, symbol: e.target.value})} onBlur={handleSymbolBlur} />
+                        {loadingStockInfo && <div className="absolute right-3 top-8 text-slate-400 animate-spin"><Loader2 size={16}/></div>}
+                     </div>
+                     <Input label="股票名稱" placeholder="台積電" value={holdingForm.name} onChange={e => setHoldingForm({...holdingForm, name: e.target.value})} />
+                  </div>
+                  
                   <div className="grid grid-cols-2 gap-3"><Input label="成交股數" type="number" placeholder="1000" value={holdingForm.shares} onChange={e => setHoldingForm({...holdingForm, shares: e.target.value})} /><Input label="成交單價" type="number" placeholder="500" value={holdingForm.price} onChange={e => setHoldingForm({...holdingForm, price: e.target.value})} /></div>
                   <div className="grid grid-cols-2 gap-3"><Input label="手續費" type="number" placeholder="20" value={holdingForm.fee} onChange={e => setHoldingForm({...holdingForm, fee: e.target.value})} /><div className="flex flex-col gap-1 justify-center"><span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">預估總金額</span><div className={`text-lg font-bold ${holdingForm.type === 'buy' ? 'text-red-600' : 'text-emerald-600'}`}>{formatNumber(calculateEstimate())}</div></div></div>
                   <Input label="備註" placeholder="例如：定期定額、波段..." value={holdingForm.note} onChange={e => setHoldingForm({...holdingForm, note: e.target.value})} /><Button onClick={handleSaveHolding} className="w-full mt-2" variant={holdingForm.type === 'buy' ? 'buyActive' : 'sellActive'}><Save size={18} /> {editingHolding ? "儲存修改" : "確認新增"}</Button>
@@ -920,7 +941,6 @@
           );
         }
 
-        // --- 啟動 React ---
         const root = createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>
