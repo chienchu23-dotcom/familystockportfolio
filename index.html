@@ -1,1334 +1,928 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import * as ReactDOM from 'react-dom';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, writeBatch, getDoc, setDoc } from 'firebase/firestore';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid, Area, AreaChart } from 'recharts';
-import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock } from 'lucide-react';
-
-// --- Firebase Configuration ---
-const firebaseConfig = {
-  apiKey: "AIzaSyC2mxpOL7hzieOBCv_7rPI6E-xpCe6DznA",
-  authDomain: "familystockprofolio.firebaseapp.com",
-  projectId: "familystockprofolio",
-  storageBucket: "familystockprofolio.firebasestorage.app",
-  messagingSenderId: "564776642204",
-  appId: "1:564776642204:web:8621dabdf6fa15cbc9af59",
-  measurementId: "G-YSBHV5P3RP"
-};
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
-// --- Components ---
-const Card = ({ children, className = "" }) => (
-  <div className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${className}`}>
-    {children}
-  </div>
-);
-
-const Button = ({ children, onClick, variant = "primary", className = "", disabled = false, isLoading = false }) => {
-  const baseStyle = "px-4 py-2 rounded-lg font-medium transition-all duration-200 flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed";
-  const variants = {
-    primary: "bg-blue-600 text-white hover:bg-blue-700",
-    secondary: "bg-slate-100 text-slate-700 hover:bg-slate-200",
-    danger: "bg-red-50 text-red-600 hover:bg-red-100",
-    outline: "border border-slate-200 text-slate-600 hover:bg-slate-50",
-    success: "bg-emerald-600 text-white hover:bg-emerald-700",
-    buy: "bg-red-50 text-red-600 hover:bg-red-100 border border-red-200",
-    sell: "bg-emerald-50 text-emerald-600 hover:bg-emerald-100 border border-emerald-200",
-    buyActive: "bg-red-600 text-white shadow-md ring-2 ring-red-200 ring-offset-1",
-    sellActive: "bg-emerald-600 text-white shadow-md ring-2 ring-emerald-200 ring-offset-1"
-  };
-  return (
-    <button onClick={onClick} className={`${baseStyle} ${variants[variant]} ${className}`} disabled={disabled || isLoading}>
-      {isLoading ? <RefreshCw size={18} className="animate-spin" /> : children}
-    </button>
-  );
-};
-
-const Input = ({ label, value, onChange, type = "text", placeholder, className = "" }) => (
-  <div className={`flex flex-col gap-1 ${className}`}>
-    {label && <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{label}</label>}
-    <input
-      type={type}
-      value={value}
-      onChange={onChange}
-      placeholder={placeholder}
-      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-slate-800"
-    />
-  </div>
-);
-
-const Modal = ({ isOpen, onClose, title, children }) => {
-  if (!isOpen) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
-        <div className="flex justify-between items-center p-4 border-b border-slate-100 bg-slate-50 shrink-0">
-          <h3 className="font-bold text-lg text-slate-800">{title}</h3>
-          <button onClick={onClose} className="p-1 hover:bg-slate-200 rounded-full text-slate-500">
-            <X size={20} />
-          </button>
-        </div>
-        <div className="p-4 overflow-y-auto">
-          {children}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// --- Formatters ---
-const formatCurrency = (value) => new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(value);
-const formatNumber = (value) => new Intl.NumberFormat('zh-TW').format(value);
-const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1'];
-
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [activeTab, setActiveTab] = useState('overview');
-  const [members, setMembers] = useState([]);
-  const [allHoldings, setAllHoldings] = useState([]); 
-  const [loading, setLoading] = useState(true);
-   
-  // Security States
-  const [isLocked, setIsLocked] = useState(true); // Default locked until checked
-  const [hasPin, setHasPin] = useState(false);
-  const [pinInput, setPinInput] = useState("");
-  const [storedPin, setStoredPin] = useState(null);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [newPin, setNewPin] = useState("");
-   
-  // Year & Month Management
-  const currentYear = new Date().getFullYear().toString();
-  const currentMonth = (new Date().getMonth() + 1).toString();
-  const [activeYear, setActiveYear] = useState(currentYear);
-  const [activeMonth, setActiveMonth] = useState('all');
-  const [availableYears, setAvailableYears] = useState([currentYear]);
-
-  // View Mode
-  const [holdingViewMode, setHoldingViewMode] = useState('summary');
-
-  // Update Logic States
-  const [updatingPrices, setUpdatingPrices] = useState(false);
-  const [priceUpdateMsg, setPriceUpdateMsg] = useState("");
-  const [lastUpdateTime, setLastUpdateTime] = useState(null);
-
-  // Modal States
-  const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
-  const [isAddHoldingOpen, setIsAddHoldingOpen] = useState(false);
-  const [isImportOpen, setIsImportOpen] = useState(false);
-  const [editingHolding, setEditingHolding] = useState(null);
-
-  // Form States
-  const [newMemberName, setNewMemberName] = useState("");
-  const [holdingForm, setHoldingForm] = useState({
-    memberId: "",
-    symbol: "",
-    name: "",
-    shares: "",
-    price: "",
-    fee: "",
-    note: "", 
-    type: "buy",
-    date: new Date().toISOString().split('T')[0],
-    year: currentYear
-  });
-
-  // Import State
-  const [importTargetMemberId, setImportTargetMemberId] = useState("");
-  const [csvPreview, setCsvPreview] = useState([]);
-  const fileInputRef = useRef(null);
-
-  // --- Load XLSX Library ---
-  useEffect(() => {
-    const script = document.createElement('script');
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-    script.async = true;
-    document.body.appendChild(script);
-    return () => {
-      document.body.removeChild(script);
-    };
-  }, []);
-
-  // --- Auth & Data Fetching ---
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          try {
-            await signInWithCustomToken(auth, __initial_auth_token);
-          } catch (e) {
-            console.warn("Custom token auth failed (likely config mismatch), falling back to anonymous auth", e);
-            await signInAnonymously(auth);
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>家庭資產管家 (單檔測試版)</title>
+    
+    <!-- 1. 載入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              slate: { 50: '#f8fafc', 100: '#f1f5f9', 200: '#e2e8f0', 300: '#cbd5e1', 400: '#94a3b8', 500: '#64748b', 600: '#475569', 700: '#334155', 800: '#1e293b', 900: '#0f172a' }
+            }
           }
-        } else {
-          await signInAnonymously(auth);
         }
-      } catch (error) {
-        console.error("Auth error:", error);
       }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
+    </script>
 
-  // --- Security Check & Data Fetching ---
-  useEffect(() => {
-    if (!user) return;
-
-    // 1. Check for PIN
-    const checkSecurity = async () => {
-      try {
-        const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security');
-        const snap = await getDoc(settingsRef);
-        if (snap.exists() && snap.data().pin) {
-          setHasPin(true);
-          setStoredPin(snap.data().pin);
-          setIsLocked(true); // Lock if PIN exists
-        } else {
-          setHasPin(false);
-          setIsLocked(false); // Unlock if no PIN
-        }
-      } catch (e) {
-        console.error("Security check failed:", e);
-        setIsLocked(false);
+    <!-- 2. Import Map (關鍵修正：讓瀏覽器知道 'react' 是什麼) -->
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.3.1",
+        "react-dom": "https://esm.sh/react-dom@18.3.1",
+        "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+        "recharts": "https://esm.sh/recharts@2.13.0?external=react,react-dom",
+        "lucide-react": "https://esm.sh/lucide-react@0.454.0?external=react"
       }
-    };
-    checkSecurity();
+    }
+    </script>
 
-    // 2. Fetch Data
-    const membersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'members');
-    const unsubMembers = onSnapshot(membersRef, (snapshot) => {
-      setMembers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
+    <!-- 3. 載入 Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    const holdingsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'holdings');
-    const unsubHoldings = onSnapshot(holdingsRef, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setAllHoldings(data);
-      setLoading(false);
-       
-      const years = new Set(data.map(h => h.year || currentYear));
-      years.add(currentYear);
-      const sortedYears = Array.from(years).sort((a, b) => b.localeCompare(a));
-      setAvailableYears(sortedYears);
+    <!-- 4. 載入 XLSX 庫 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
-      if (data.length > 0) {
-        const timestamps = data.map(h => h.updatedAt?.seconds || 0);
-        const maxTime = Math.max(...timestamps);
-        if (maxTime > 0) setLastUpdateTime(new Date(maxTime * 1000));
-      }
-    });
+    <style>
+      .scrollbar-hide::-webkit-scrollbar { display: none; }
+      .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+      .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+      @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+      .animate-in { animation: fadeIn 0.3s ease-out forwards; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
 
-    return () => { unsubMembers(); unsubHoldings(); };
-  }, [user]);
-
-  // --- Filtered Data ---
-  const holdings = useMemo(() => {
-    let filtered = allHoldings.filter(h => {
-      const yearMatch = (h.year || currentYear) === activeYear;
-      if (!yearMatch) return false;
-      if (activeMonth === 'all') return true;
-      if (h.date) {
-        const month = parseInt(h.date.split('-')[1], 10).toString();
-        return month === activeMonth;
-      }
-      return false;
-    });
-     
-    return filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
-  }, [allHoldings, activeYear, activeMonth, currentYear]);
-
-  // --- Aggregated Data ---
-  const aggregatedHoldings = useMemo(() => {
-    const groups = {};
-    const sortedForCalc = [...holdings].sort((a, b) => new Date(a.date) - new Date(b.date));
-
-    sortedForCalc.forEach(tx => {
-      const key = `${tx.memberId}_${tx.symbol}`;
-      if (!groups[key]) {
-        groups[key] = {
-          memberId: tx.memberId,
-          symbol: tx.symbol,
-          name: tx.name,
-          currentPrice: tx.currentPrice,
-          dailyChangePercent: tx.dailyChangePercent,
-          shares: 0,
-          totalCost: 0,
-          realizedProfit: 0,
-          txCount: 0
-        };
-      }
-
-      const group = groups[key];
-      if (tx.currentPrice) group.currentPrice = tx.currentPrice;
-      if (tx.dailyChangePercent) group.dailyChangePercent = tx.dailyChangePercent;
-       
-      const qty = tx.shares;
-      const unitCost = tx.cost;
-
-      if (qty > 0) {
-        group.shares += qty;
-        group.totalCost += (qty * unitCost);
-      } else {
-        const avgCost = group.shares > 0 ? (group.totalCost / group.shares) : 0;
-        const sellQty = Math.abs(qty);
-        const revenue = sellQty * unitCost;
-        const costBasis = sellQty * avgCost;
+    <!-- 5. 主要程式碼 -->
+    <script type="text/babel" data-type="module">
+        // --- 導入套件 (使用 Import Map 定義的名稱) ---
+        import React, { useState, useEffect, useMemo, useRef } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid, Area, AreaChart } from 'recharts';
+        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock } from 'lucide-react';
         
-        group.realizedProfit += (revenue - costBasis);
-        group.shares -= sellQty;
-        group.totalCost -= costBasis;
-      }
-      group.txCount++;
-    });
+        // Firebase (保持 CDN 連結)
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, writeBatch, getDoc, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+        
+        // --- Firebase 設定 ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyC2mxpOL7hzieOBCv_7rPI6E-xpCe6DznA",
+            authDomain: "familystockprofolio.firebaseapp.com",
+            projectId: "familystockprofolio",
+            storageBucket: "familystockprofolio.firebasestorage.app",
+            messagingSenderId: "564776642204",
+            appId: "1:564776642204:web:8621dabdf6fa15cbc9af59",
+            measurementId: "G-YSBHV5P3RP"
+        };
 
-    return Object.values(groups).map(g => {
-      const avgCost = g.shares > 0 ? g.totalCost / g.shares : 0;
-      const marketValue = g.shares * g.currentPrice;
-      const unrealizedProfit = marketValue - g.totalCost;
-      const unrealizedProfitPercent = g.totalCost > 0 ? (unrealizedProfit / g.totalCost) * 100 : 0;
-       
-      return {
-        ...g,
-        avgCost,
-        marketValue,
-        unrealizedProfit,
-        unrealizedProfitPercent
-      };
-    }).filter(g => g.shares > 0 || g.realizedProfit !== 0);
-  }, [holdings]);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = "github-web-version"; // 定義一個固定的 appId
 
-  // --- Trend Data Calculation ---
-  const trendData = useMemo(() => {
-    const months = Array.from({ length: 12 }, (_, i) => i + 1);
-     
-    // Get transactions for the active year, sorted by date ASC
-    const yearTxs = allHoldings
-      .filter(h => (h.year || currentYear) === activeYear)
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-
-    const priceMap = {};
-    allHoldings.forEach(h => {
-        if(h.currentPrice) priceMap[h.symbol] = h.currentPrice;
-    });
-
-    let runningPortfolio = {}; 
-     
-    return months.map(month => {
-      const monthlyTxs = yearTxs.filter(h => {
-         const m = parseInt(h.date?.split('-')[1] || 0, 10);
-         return m === month;
-      });
-
-      monthlyTxs.forEach(tx => {
-          const sym = tx.symbol;
-          if(!runningPortfolio[sym]) runningPortfolio[sym] = { shares: 0, totalCost: 0 };
-          
-          const qty = tx.shares;
-          const unitCost = tx.cost;
-
-          if (qty > 0) {
-              runningPortfolio[sym].shares += qty;
-              runningPortfolio[sym].totalCost += (qty * unitCost);
-          } else {
-              const sellQty = Math.abs(qty);
-              const currentAvg = runningPortfolio[sym].shares > 0 ? runningPortfolio[sym].totalCost / runningPortfolio[sym].shares : 0;
-              runningPortfolio[sym].shares -= sellQty;
-              runningPortfolio[sym].totalCost -= (sellQty * currentAvg);
-          }
-      });
-
-      let monthMarketValue = 0;
-      let monthInvestedCost = 0;
-
-      Object.entries(runningPortfolio).forEach(([sym, data]) => {
-          if (data.shares > 0) {
-              monthInvestedCost += data.totalCost;
-              const price = priceMap[sym] || data.totalCost/data.shares; 
-              monthMarketValue += data.shares * price;
-          }
-      });
-
-      return {
-          name: `${month}月`,
-          marketValue: Math.round(monthMarketValue),
-          invested: Math.round(monthInvestedCost)
-      };
-    });
-  }, [allHoldings, activeYear]);
-
-  // --- Helpers & APIs ---
-  const fetchWithDualProxy = async (targetUrl) => {
-    const encodedUrl = encodeURIComponent(targetUrl);
-    const timestamp = Date.now();
-    const proxy1 = `https://api.allorigins.win/raw?url=${encodedUrl}&t=${timestamp}`;
-    const proxy2 = `https://corsproxy.io/?${encodedUrl}`;
-
-    try {
-      const response = await fetch(proxy1);
-      if (response.ok) return await response.json();
-      throw new Error("Line 1 failed");
-    } catch (e) {
-      try {
-        const response2 = await fetch(proxy2);
-        if (response2.ok) return await response2.json();
-        throw new Error("Line 2 failed");
-      } catch (e2) {
-        return null;
-      }
-    }
-  };
-
-  const fetchYahooQuote = async (symbol) => {
-    const searchSymbol = symbol.trim().toUpperCase();
-    const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${searchSymbol}`;
-    const data = await fetchWithDualProxy(yahooUrl);
-
-    if (data?.quoteResponse?.result?.[0]) {
-      const result = data.quoteResponse.result[0];
-      return {
-        price: result.regularMarketPrice,
-        change: result.regularMarketChange,
-        changePercent: result.regularMarketChangePercent,
-        source: 'Yahoo'
-      };
-    }
-    return null;
-  };
-
-  const fetchTWSEQuote = async (symbol) => {
-    const code = symbol.trim();
-    const query = `tse_${code}.tw|otc_${code}.tw`;
-    const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
-    const data = await fetchWithDualProxy(twseUrl);
-    const result = data?.msgArray?.find(item => item.c === code);
-
-    if (result) {
-      let price = parseFloat(result.z);
-      if (isNaN(price)) price = parseFloat(result.b?.split('_')[0]);
-      if (isNaN(price)) price = parseFloat(result.a?.split('_')[0]);
-      if (isNaN(price)) price = parseFloat(result.y);
-
-      const yesterday = parseFloat(result.y);
-      const change = price - yesterday;
-      const changePercent = (change / yesterday) * 100;
-
-      return {
-        price: price,
-        change: change,
-        changePercent: changePercent,
-        name: result.n,
-        source: 'TWSE'
-      };
-    }
-    return null;
-  };
-
-  const fetchStockByName = async (name) => {
-    if (!name) return null;
-    const encodedName = encodeURIComponent(name);
-    const searchUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodedName}&newsCount=0&quotesCount=1`;
-    const data = await fetchWithDualProxy(searchUrl);
-    if (data?.quotes?.[0]) {
-      return await fetchYahooQuote(data.quotes[0].symbol);
-    }
-    return null;
-  };
-
-  const fetchStockData = async (symbol, name) => {
-    let result = null;
-    const trimmedSymbol = symbol.trim();
-    const isTaiwanStock = /^\d+[a-zA-Z]?$/.test(trimmedSymbol);
-
-    if (isTaiwanStock) {
-      result = await fetchTWSEQuote(trimmedSymbol);
-      if (!result) result = await fetchYahooQuote(`${trimmedSymbol}.TW`);
-      if (!result) result = await fetchYahooQuote(`${trimmedSymbol}.TWO`);
-    } else {
-      result = await fetchYahooQuote(trimmedSymbol);
-    }
-
-    if (!result && name) {
-      result = await fetchStockByName(name);
-    }
-    return result;
-  };
-
-  const handleUpdatePrices = async () => {
-    if (!user || allHoldings.length === 0) return;
-    setUpdatingPrices(true);
-    setPriceUpdateMsg(`正在更新 ${activeYear} 年度股價...`);
-
-    let successCount = 0;
-    let failCount = 0;
-
-    const uniqueSymbols = new Set(holdings.map(h => h.symbol));
-    const symbolMap = {}; 
-
-    const promises = Array.from(uniqueSymbols).map(async (symbol) => {
-       const h = holdings.find(h => h.symbol === symbol); 
-       const quote = await fetchStockData(symbol, h?.name);
-       if (quote) {
-         symbolMap[symbol] = quote;
-       }
-    });
-
-    await Promise.all(promises);
-
-    const updates = holdings.map(async (h) => {
-      const quote = symbolMap[h.symbol];
-      if (quote && quote.price) {
-        successCount++;
-        return updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id), {
-          currentPrice: quote.price,
-          dailyChange: quote.change || 0,
-          dailyChangePercent: quote.changePercent || 0,
-          updatedAt: new Date()
-        });
-      } else {
-        failCount++;
-        return Promise.resolve();
-      }
-    });
-
-    await Promise.all(updates);
-     
-    setUpdatingPrices(false);
-    setPriceUpdateMsg(`更新完成：成功 ${successCount}，失敗 ${failCount}`);
-    setTimeout(() => setPriceUpdateMsg(""), 4000);
-  };
-
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (!window.XLSX) { alert("Excel 解析元件尚未載入"); return; }
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const data = new Uint8Array(event.target.result);
-        const workbook = window.XLSX.read(data, { type: 'array' });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        const jsonData = window.XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false });
-        processData(jsonData);
-      } catch (error) {
-        console.error("Excel parse error", error);
-        alert("讀取失敗");
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  };
-
-  const processData = (rows) => {
-    const portfolio = [];
-
-    rows.forEach((row) => {
-      if (!row || row.length < 6) return;
-      const dateStr = row[0]?.toString().trim();
-      const symbol = row[1]?.toString().trim();
-      const name = row[2]?.toString().trim();
-      const type = row[3]?.toString().trim();
-       
-      if (type !== '買' && type !== '賣') return;
-       
-      const shares = parseFloat(row[4]);
-      const price = parseFloat(row[5]);
-       
-      if (isNaN(shares) || isNaN(price)) return;
-
-      const dateParts = dateStr ? dateStr.split('-') : [];
-      let year = activeYear;
-      if (dateParts.length === 3) year = dateParts[0];
-
-      const cost = price; 
-
-      portfolio.push({
-          symbol, name, shares: type === '買' ? shares : -shares, 
-          cost, date: dateStr, year, type
-      });
-    });
-
-    setCsvPreview(portfolio);
-  };
-
-  const handleExecuteImport = async () => {
-    if (!user || !importTargetMemberId || csvPreview.length === 0) return;
-    try {
-      const batch = writeBatch(db);
-      const holdingsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'holdings');
-
-      csvPreview.forEach(item => {
-        const newDocRef = doc(holdingsRef);
-        batch.set(newDocRef, {
-          memberId: importTargetMemberId,
-          symbol: item.symbol,
-          name: item.name,
-          shares: item.shares,
-          cost: item.cost,
-          currentPrice: item.cost,
-          date: item.date, 
-          year: item.year, 
-          updatedAt: new Date()
-        });
-      });
-      await batch.commit();
-      setIsImportOpen(false);
-      setCsvPreview([]);
-      alert(`成功匯入 ${csvPreview.length} 筆資料！`);
-      if (csvPreview[0]?.year) {
-          setActiveYear(csvPreview[0].year);
-      }
-      setActiveTab('holdings');
-    } catch (e) {
-      console.error("Import error", e);
-      alert("匯入失敗");
-    }
-  };
-
-  const createDadAndSet = async () => {
-    if (!user) return;
-    try {
-      const dad = members.find(m => m.name.includes("爸爸"));
-      if (dad) { setImportTargetMemberId(dad.id); } else {
-        const docRef = await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'members'), {
-          name: "爸爸",
-          createdAt: new Date()
-        });
-        setImportTargetMemberId(docRef.id);
-      }
-    } catch(e) {}
-  };
-
-  const getMemberName = (id) => members.find(m => m.id === id)?.name || "未知成員";
-
-  const totalAssets = aggregatedHoldings.reduce((sum, h) => sum + h.marketValue, 0);
-  const totalCost = aggregatedHoldings.reduce((sum, h) => sum + h.totalCost, 0);
-  const totalRealizedProfit = aggregatedHoldings.reduce((sum, h) => sum + h.realizedProfit, 0);
-  const totalUnrealizedProfit = aggregatedHoldings.reduce((sum, h) => sum + h.unrealizedProfit, 0);
-   
-  const totalProfit = totalRealizedProfit + totalUnrealizedProfit;
-  const totalProfitPercent = totalCost > 0 ? (totalProfit / totalCost) * 100 : 0;
-
-  const chartData = useMemo(() => {
-    const data = {};
-    aggregatedHoldings.forEach(h => {
-      const name = getMemberName(h.memberId);
-      if (!data[name]) data[name] = 0;
-      data[name] += h.marketValue;
-    });
-    return Object.entries(data).map(([name, value]) => ({ name, value }));
-  }, [aggregatedHoldings, members]);
-
-  // --- Handlers ---
-  const handleAddMember = async () => {
-    if (!newMemberName.trim() || !user) return;
-    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'members'), {
-      name: newMemberName.trim(),
-      createdAt: new Date()
-    });
-    setNewMemberName("");
-    setIsAddMemberOpen(false);
-  };
-
-  const handleDeleteMember = async (id) => {
-    if (!confirm("確定刪除成員？")) return;
-    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'members', id));
-  };
-
-  const handleSaveHolding = async () => {
-    if (!user || !holdingForm.symbol || !holdingForm.memberId) return;
-     
-    const derivedYear = holdingForm.date ? holdingForm.date.split('-')[0] : (holdingForm.year || activeYear);
-     
-    const rawPrice = Number(holdingForm.price);
-    const rawShares = Number(holdingForm.shares);
-    const rawFee = Number(holdingForm.fee) || 0;
-     
-    let finalShares = rawShares;
-    let finalCost = rawPrice;
-
-    if (holdingForm.type === 'buy') {
-        finalShares = Math.abs(rawShares);
-        finalCost = (rawPrice * finalShares + rawFee) / finalShares;
-    } else {
-        finalShares = -Math.abs(rawShares);
-        finalCost = (rawPrice * Math.abs(finalShares) - rawFee) / Math.abs(finalShares);
-    }
-
-    const data = {
-      memberId: holdingForm.memberId,
-      symbol: holdingForm.symbol.toUpperCase(),
-      name: holdingForm.name,
-      shares: finalShares,
-      cost: finalCost,
-      note: holdingForm.note,
-      date: holdingForm.date, 
-      year: derivedYear,
-      updatedAt: new Date()
-    };
-
-    if (editingHolding) {
-      await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', editingHolding.id), data);
-    } else {
-      data.currentPrice = Number(holdingForm.price); 
-      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'holdings'), data);
-    }
-    setEditingHolding(null);
-    setHoldingForm({ 
-        memberId: "", symbol: "", name: "", shares: "", price: "", fee: "", note: "", 
-        type: "buy", date: new Date().toISOString().split('T')[0], year: activeYear 
-    });
-    setIsAddHoldingOpen(false);
-  };
-
-  const handleDeleteHolding = async (id) => deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', id));
-
-  const openAddHolding = () => {
-    setEditingHolding(null);
-    setHoldingForm({ 
-        memberId: members[0]?.id || "", symbol: "", name: "", shares: "", price: "", fee: "", note: "", 
-        type: "buy", date: new Date().toISOString().split('T')[0], year: activeYear 
-    });
-    setIsAddHoldingOpen(true);
-  };
-
-  const openEditHolding = (h) => {
-    setEditingHolding(h);
-    setHoldingForm({ 
-        ...h, 
-        price: h.cost, 
-        shares: Math.abs(h.shares), 
-        type: h.shares >= 0 ? 'buy' : 'sell',
-        fee: 0, 
-        note: h.note || "", 
-        date: h.date || new Date().toISOString().split('T')[0] 
-    });
-    setIsAddHoldingOpen(true);
-  };
-
-  const calculateEstimate = () => {
-      const p = Number(holdingForm.price) || 0;
-      const s = Number(holdingForm.shares) || 0;
-      const f = Number(holdingForm.fee) || 0;
-      if (holdingForm.type === 'buy') {
-          return p * s + f;
-      } else {
-          return p * s - f;
-      }
-  };
-
-  // --- Security Handlers ---
-  const handleUnlock = () => {
-    if (pinInput === storedPin) {
-      setIsLocked(false);
-      setPinInput("");
-    } else {
-      alert("密碼錯誤，請重試");
-    }
-  };
-
-  const handleSetPin = async () => {
-    if (!newPin) return;
-    try {
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security'), { pin: newPin });
-      setHasPin(true);
-      setStoredPin(newPin);
-      setNewPin("");
-      setIsSettingsOpen(false);
-      alert("密碼設定成功！下次進入時將需要輸入密碼。");
-    } catch (e) {
-      console.error(e);
-      alert("設定失敗");
-    }
-  };
-
-  const handleRemovePin = async () => {
-    if (!confirm("確定要移除密碼保護嗎？")) return;
-    try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security'));
-      setHasPin(false);
-      setStoredPin(null);
-      setIsSettingsOpen(false);
-      alert("密碼已移除");
-    } catch (e) { console.error(e); }
-  };
-
-  // --- Shared Month Filter Component ---
-  const renderMonthFilter = () => (
-    <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-       <button 
-         onClick={() => setActiveMonth('all')}
-         className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${activeMonth === 'all' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-       >
-         全年
-       </button>
-       {[...Array(12)].map((_, i) => {
-         const m = (i + 1).toString();
-         return (
-           <button 
-             key={m}
-             onClick={() => setActiveMonth(m)}
-             className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${activeMonth === m ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-           >
-             {m}月
-           </button>
-         );
-       })}
-    </div>
-  );
-
-  // --- Lock Screen Render ---
-  if (isLocked && hasPin) {
-    return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
-          <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
-            <Lock size={32} />
+        // --- 元件定義 ---
+        const Card = ({ children, className = "" }) => (
+          <div className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${className}`}>
+            {children}
           </div>
-          <h2 className="text-2xl font-bold text-slate-800 mb-2">App 已鎖定</h2>
-          <p className="text-slate-500 mb-6">請輸入密碼以存取您的資產</p>
-          <input 
-            type="password" 
-            value={pinInput} 
-            onChange={e => setPinInput(e.target.value)} 
-            className="w-full px-4 py-3 text-center text-2xl tracking-widest bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
-            placeholder="••••"
-            maxLength={6}
-          />
-          <Button onClick={handleUnlock} className="w-full justify-center">
-            <Unlock size={18} /> 解鎖
-          </Button>
-        </div>
-      </div>
-    );
-  }
+        );
 
-  const renderOverview = () => (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-       
-      {renderMonthFilter()}
+        const Button = ({ children, onClick, variant = "primary", className = "", disabled = false, isLoading = false }) => {
+          const baseStyle = "px-4 py-2 rounded-lg font-medium transition-all duration-200 flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed";
+          const variants = {
+            primary: "bg-blue-600 text-white hover:bg-blue-700",
+            secondary: "bg-slate-100 text-slate-700 hover:bg-slate-200",
+            danger: "bg-red-50 text-red-600 hover:bg-red-100",
+            outline: "border border-slate-200 text-slate-600 hover:bg-slate-50",
+            success: "bg-emerald-600 text-white hover:bg-emerald-700",
+            buy: "bg-red-50 text-red-600 hover:bg-red-100 border border-red-200",
+            sell: "bg-emerald-50 text-emerald-600 hover:bg-emerald-100 border border-emerald-200",
+            buyActive: "bg-red-600 text-white shadow-md ring-2 ring-red-200 ring-offset-1",
+            sellActive: "bg-emerald-600 text-white shadow-md ring-2 ring-emerald-200 ring-offset-1"
+          };
+          return (
+            <button onClick={onClick} className={`${baseStyle} ${variants[variant]} ${className}`} disabled={disabled || isLoading}>
+              {isLoading ? <RefreshCw size={18} className="animate-spin" /> : children}
+            </button>
+          );
+        };
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card className="bg-gradient-to-br from-blue-600 to-indigo-700 text-white p-6 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-16 -mt-16 pointer-events-none"></div>
-          <div className="flex items-center gap-2 opacity-80 mb-2">
-            <DollarSign size={18} />
-            <span className="text-sm font-medium">{activeYear} 年 {activeMonth === 'all' ? '全年' : `${activeMonth}月`} 總資產</span>
+        const Input = ({ label, value, onChange, type = "text", placeholder, className = "" }) => (
+          <div className={`flex flex-col gap-1 ${className}`}>
+            {label && <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{label}</label>}
+            <input
+              type={type}
+              value={value}
+              onChange={onChange}
+              placeholder={placeholder}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-slate-800"
+            />
           </div>
-          <div className="text-4xl font-bold tracking-tight mb-3 text-shadow-sm">
-            {formatCurrency(totalAssets)}
-          </div>
-          <div className="flex items-center gap-2 text-xs font-medium bg-white/10 w-fit px-3 py-1.5 rounded-full backdrop-blur-sm">
-            <span>總投入: {formatNumber(totalCost)}</span>
-          </div>
-        </Card>
+        );
 
-        <Card className={`p-6 ${totalProfit >= 0 ? 'bg-red-50 border-red-100' : 'bg-emerald-50 border-emerald-100'}`}>
-          <div className="flex items-center gap-2 text-slate-500 mb-2">
-            {totalProfit >= 0 ? <TrendingUp size={18} className="text-red-600"/> : <TrendingDown size={18} className="text-emerald-600"/>}
-            <span className="text-sm font-medium">總損益 (含已實現)</span>
-          </div>
-          <div className={`text-3xl font-bold tracking-tight mb-2 ${totalProfit >= 0 ? 'text-red-700' : 'text-emerald-700'}`}>
-            {totalProfit > 0 ? "+" : ""}{formatCurrency(totalProfit)}
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-xs opacity-75">
-             <div>未實現: {formatCurrency(totalUnrealizedProfit)}</div>
-             <div>已實現: {formatCurrency(totalRealizedProfit)}</div>
-          </div>
-        </Card>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <div className="flex justify-between items-center px-1">
-          <span className="text-xs text-slate-400 flex items-center gap-1">
-            <Clock size={12} />
-            {lastUpdateTime ? `最後更新: ${lastUpdateTime.toLocaleTimeString()}` : "尚未更新"}
-          </span>
-          <span className="text-xs text-slate-400 flex items-center gap-1">
-             <Filter size={12} /> 顯示中: {activeYear} / {activeMonth === 'all' ? '全年' : `${activeMonth}月`}
-          </span>
-        </div>
-        <Button 
-          onClick={handleUpdatePrices} 
-          isLoading={updatingPrices} 
-          variant="secondary"
-          className="w-full bg-white border border-blue-100 text-blue-600 hover:bg-blue-50"
-        >
-          <RefreshCw size={18} className={updatingPrices ? "animate-spin" : ""} />
-          {updatingPrices ? `正在更新 ${activeYear} 年度股價...` : "更新即時股價"}
-        </Button>
-        {priceUpdateMsg && (
-           <div className={`text-xs text-center flex items-center justify-center gap-1 ${priceUpdateMsg.includes('失敗') ? 'text-red-500' : 'text-emerald-600'}`}>
-             <AlertCircle size={12} /> {priceUpdateMsg}
-           </div>
-        )}
-      </div>
-
-      {/* NEW: Asset Trend Chart */}
-      <Card className="p-6">
-        <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-          <Activity size={20} className="text-blue-500"/>
-          {activeYear} 年度資產趨勢
-        </h3>
-        <div className="h-64 w-full text-xs">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={trendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.1}/>
-                  <stop offset="95%" stopColor="#3B82F6" stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0"/>
-              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748B'}} />
-              <YAxis hide domain={['auto', 'auto']} />
-              <RechartsTooltip 
-                formatter={(value) => formatCurrency(value)}
-                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-              />
-              <Legend verticalAlign="top" height={36}/>
-              <Area type="monotone" dataKey="marketValue" name="總市值 (估)" stroke="#3B82F6" strokeWidth={2} fillOpacity={1} fill="url(#colorValue)" />
-              <Line type="monotone" dataKey="invested" name="投入成本" stroke="#94A3B8" strokeWidth={2} strokeDasharray="5 5" dot={false} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
-
-      <Card className="p-6">
-        <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-          <PieChartIcon size={20} className="text-blue-500"/>
-          資產分佈
-        </h3>
-        <div className="h-64 w-full">
-          {chartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={chartData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                  {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
-                </Pie>
-                <RechartsTooltip formatter={(value) => formatCurrency(value)} />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-full flex items-center justify-center text-slate-400">尚無資產資料</div>
-          )}
-        </div>
-      </Card>
-    </div>
-  );
-
-  const renderHoldings = () => (
-    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex flex-col gap-3">
-        <div className="flex justify-between items-center">
-          <div className="flex bg-slate-100 rounded-lg p-1 gap-1">
-             <button
-               onClick={() => setHoldingViewMode('summary')}
-               className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all ${holdingViewMode === 'summary' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
-             >
-               <Layers size={14}/> 庫存總覽
-             </button>
-             <button
-               onClick={() => setHoldingViewMode('history')}
-               className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all ${holdingViewMode === 'history' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
-             >
-               <List size={14}/> 交易紀錄
-             </button>
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={() => { setIsImportOpen(true); createDadAndSet(); }} variant="secondary" className="px-3 py-1.5 text-xs">
-               <Upload size={14} /> 匯入
-            </Button>
-            <Button onClick={openAddHolding} disabled={members.length === 0} className="px-3 py-1.5 text-xs">
-              <Plus size={14} /> 新增
-            </Button>
-          </div>
-        </div>
-         
-        {renderMonthFilter()}
-      </div>
-
-      <div className="grid gap-3">
-        {holdingViewMode === 'summary' && (
-          aggregatedHoldings.length === 0 ? (
-             <div className="text-center py-10 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-              無持股庫存
+        const Modal = ({ isOpen, onClose, title, children }) => {
+          if (!isOpen) return null;
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+              <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+                <div className="flex justify-between items-center p-4 border-b border-slate-100 bg-slate-50 shrink-0">
+                  <h3 className="font-bold text-lg text-slate-800">{title}</h3>
+                  <button onClick={onClose} className="p-1 hover:bg-slate-200 rounded-full text-slate-500">
+                    <X size={20} />
+                  </button>
+                </div>
+                <div className="p-4 overflow-y-auto">
+                  {children}
+                </div>
+              </div>
             </div>
-          ) : (
-            aggregatedHoldings.map((g) => (
-              <Card key={`${g.memberId}_${g.symbol}`} className="p-4 flex flex-col gap-3 border-l-4 border-l-blue-500">
-                <div className="flex justify-between items-start">
-                  <div>
-                      <div className="flex items-center gap-2">
-                       <span className="font-bold text-lg text-slate-800">{g.symbol}</span>
-                       <span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">{getMemberName(g.memberId)}</span>
-                      </div>
-                      <div className="flex flex-col gap-0.5 mt-0.5">
-                        <span className="text-sm text-slate-500">{g.name}</span>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          {g.dailyChangePercent !== undefined && (
-                            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${g.dailyChangePercent > 0 ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}`}>
-                              {g.dailyChangePercent > 0 ? '▲' : '▼'} {Math.abs(g.dailyChangePercent).toFixed(2)}%
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                  </div>
-                  <div className={`text-right ${g.unrealizedProfit >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                    <div className="font-bold text-lg">{g.unrealizedProfit > 0 ? "+" : ""}{formatNumber(Math.round(g.unrealizedProfit))}</div>
-                    <div className="text-xs font-medium">{g.unrealizedProfitPercent.toFixed(2)}% (未實現)</div>
-                  </div>
-                </div>
-                 
-                <div className="grid grid-cols-2 gap-2 text-sm pt-2 border-t border-slate-100">
-                  <div className="text-slate-500">
-                    <span className="text-xs uppercase text-slate-400 block">持股 / 平均成本</span>
-                    {formatNumber(g.shares)} / {formatNumber(Math.round(g.avgCost))}
-                  </div>
-                  <div className="text-slate-500 text-right">
-                    <span className="text-xs uppercase text-slate-400 block">市值 / 現價</span>
-                    {formatNumber(Math.round(g.marketValue))} / {formatNumber(g.currentPrice)}
-                  </div>
-                </div>
+          );
+        };
 
-                {g.realizedProfit !== 0 && (
-                  <div className="mt-1 pt-2 border-t border-dashed border-slate-200 flex justify-between items-center text-xs">
-                    <span className="text-slate-400">已實現損益</span>
-                    <span className={`font-bold ${g.realizedProfit >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                      {g.realizedProfit > 0 ? "+" : ""}{formatNumber(Math.round(g.realizedProfit))}
-                    </span>
+        // --- 格式化工具 ---
+        const formatCurrency = (value) => new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(value);
+        const formatNumber = (value) => new Intl.NumberFormat('zh-TW').format(value);
+        const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1'];
+
+        // --- 主程式 ---
+        function App() {
+          const [user, setUser] = useState(null);
+          const [activeTab, setActiveTab] = useState('overview');
+          const [members, setMembers] = useState([]);
+          const [allHoldings, setAllHoldings] = useState([]); 
+          const [loading, setLoading] = useState(true);
+           
+          // Security States
+          const [isLocked, setIsLocked] = useState(true);
+          const [hasPin, setHasPin] = useState(false);
+          const [pinInput, setPinInput] = useState("");
+          const [storedPin, setStoredPin] = useState(null);
+          const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+          const [newPin, setNewPin] = useState("");
+           
+          // Year & Month Management
+          const currentYear = new Date().getFullYear().toString();
+          const [activeYear, setActiveYear] = useState(currentYear);
+          const [activeMonth, setActiveMonth] = useState('all');
+          const [availableYears, setAvailableYears] = useState([currentYear]);
+
+          // View Mode
+          const [holdingViewMode, setHoldingViewMode] = useState('summary');
+
+          // Update Logic States
+          const [updatingPrices, setUpdatingPrices] = useState(false);
+          const [priceUpdateMsg, setPriceUpdateMsg] = useState("");
+          const [lastUpdateTime, setLastUpdateTime] = useState(null);
+
+          // Modal States
+          const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
+          const [isAddHoldingOpen, setIsAddHoldingOpen] = useState(false);
+          const [isImportOpen, setIsImportOpen] = useState(false);
+          const [editingHolding, setEditingHolding] = useState(null);
+
+          // Form States
+          const [newMemberName, setNewMemberName] = useState("");
+          const [holdingForm, setHoldingForm] = useState({
+            memberId: "",
+            symbol: "",
+            name: "",
+            shares: "",
+            price: "",
+            fee: "",
+            note: "", 
+            type: "buy",
+            date: new Date().toISOString().split('T')[0],
+            year: currentYear
+          });
+
+          // Import State
+          const [importTargetMemberId, setImportTargetMemberId] = useState("");
+          const [csvPreview, setCsvPreview] = useState([]);
+          const fileInputRef = useRef(null);
+
+          // --- Auth & Data Fetching ---
+          useEffect(() => {
+            const initAuth = async () => {
+              try {
+                // 這裡我們只使用匿名登入，因為沒有 Immersive 環境的 custom token
+                await signInAnonymously(auth);
+              } catch (error) {
+                console.error("Auth error:", error);
+              }
+            };
+            initAuth();
+            const unsubscribe = onAuthStateChanged(auth, setUser);
+            return () => unsubscribe();
+          }, []);
+
+          // --- Security Check & Data Fetching ---
+          useEffect(() => {
+            if (!user) return;
+
+            // 1. Check for PIN
+            const checkSecurity = async () => {
+              try {
+                const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security');
+                const snap = await getDoc(settingsRef);
+                if (snap.exists() && snap.data().pin) {
+                  setHasPin(true);
+                  setStoredPin(snap.data().pin);
+                  setIsLocked(true); 
+                } else {
+                  setHasPin(false);
+                  setIsLocked(false); 
+                }
+              } catch (e) {
+                console.error("Security check failed:", e);
+                setIsLocked(false);
+              }
+            };
+            checkSecurity();
+
+            // 2. Fetch Data
+            const membersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'members');
+            const unsubMembers = onSnapshot(membersRef, (snapshot) => {
+              setMembers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            });
+
+            const holdingsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'holdings');
+            const unsubHoldings = onSnapshot(holdingsRef, (snapshot) => {
+              const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+              setAllHoldings(data);
+              setLoading(false);
+               
+              const years = new Set(data.map(h => h.year || currentYear));
+              years.add(currentYear);
+              const sortedYears = Array.from(years).sort((a, b) => b.localeCompare(a));
+              setAvailableYears(sortedYears);
+
+              if (data.length > 0) {
+                const timestamps = data.map(h => h.updatedAt?.seconds || 0);
+                const maxTime = Math.max(...timestamps);
+                if (maxTime > 0) setLastUpdateTime(new Date(maxTime * 1000));
+              }
+            });
+
+            return () => { unsubMembers(); unsubHoldings(); };
+          }, [user]);
+
+          // --- Filtered Data ---
+          const holdings = useMemo(() => {
+            let filtered = allHoldings.filter(h => {
+              const yearMatch = (h.year || currentYear) === activeYear;
+              if (!yearMatch) return false;
+              if (activeMonth === 'all') return true;
+              if (h.date) {
+                const month = parseInt(h.date.split('-')[1], 10).toString();
+                return month === activeMonth;
+              }
+              return false;
+            });
+            return filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
+          }, [allHoldings, activeYear, activeMonth, currentYear]);
+
+          // --- Aggregated Data ---
+          const aggregatedHoldings = useMemo(() => {
+            const groups = {};
+            const sortedForCalc = [...holdings].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+            sortedForCalc.forEach(tx => {
+              const key = `${tx.memberId}_${tx.symbol}`;
+              if (!groups[key]) {
+                groups[key] = {
+                  memberId: tx.memberId,
+                  symbol: tx.symbol,
+                  name: tx.name,
+                  currentPrice: tx.currentPrice,
+                  dailyChangePercent: tx.dailyChangePercent,
+                  shares: 0,
+                  totalCost: 0,
+                  realizedProfit: 0,
+                  txCount: 0
+                };
+              }
+
+              const group = groups[key];
+              if (tx.currentPrice) group.currentPrice = tx.currentPrice;
+              if (tx.dailyChangePercent) group.dailyChangePercent = tx.dailyChangePercent;
+               
+              const qty = tx.shares;
+              const unitCost = tx.cost;
+
+              if (qty > 0) {
+                group.shares += qty;
+                group.totalCost += (qty * unitCost);
+              } else {
+                const avgCost = group.shares > 0 ? (group.totalCost / group.shares) : 0;
+                const sellQty = Math.abs(qty);
+                const revenue = sellQty * unitCost;
+                const costBasis = sellQty * avgCost;
+                
+                group.realizedProfit += (revenue - costBasis);
+                group.shares -= sellQty;
+                group.totalCost -= costBasis;
+              }
+              group.txCount++;
+            });
+
+            return Object.values(groups).map(g => {
+              const avgCost = g.shares > 0 ? g.totalCost / g.shares : 0;
+              const marketValue = g.shares * g.currentPrice;
+              const unrealizedProfit = marketValue - g.totalCost;
+              const unrealizedProfitPercent = g.totalCost > 0 ? (unrealizedProfit / g.totalCost) * 100 : 0;
+               
+              return {
+                ...g,
+                avgCost,
+                marketValue,
+                unrealizedProfit,
+                unrealizedProfitPercent
+              };
+            }).filter(g => g.shares > 0 || g.realizedProfit !== 0);
+          }, [holdings]);
+
+          // --- Trend Data Calculation ---
+          const trendData = useMemo(() => {
+            const months = Array.from({ length: 12 }, (_, i) => i + 1);
+            const yearTxs = allHoldings
+              .filter(h => (h.year || currentYear) === activeYear)
+              .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+            const priceMap = {};
+            allHoldings.forEach(h => {
+                if(h.currentPrice) priceMap[h.symbol] = h.currentPrice;
+            });
+
+            let runningPortfolio = {}; 
+             
+            return months.map(month => {
+              const monthlyTxs = yearTxs.filter(h => {
+                 const m = parseInt(h.date?.split('-')[1] || 0, 10);
+                 return m === month;
+              });
+
+              monthlyTxs.forEach(tx => {
+                  const sym = tx.symbol;
+                  if(!runningPortfolio[sym]) runningPortfolio[sym] = { shares: 0, totalCost: 0 };
+                  const qty = tx.shares;
+                  const unitCost = tx.cost;
+                  if (qty > 0) {
+                      runningPortfolio[sym].shares += qty;
+                      runningPortfolio[sym].totalCost += (qty * unitCost);
+                  } else {
+                      const sellQty = Math.abs(qty);
+                      const currentAvg = runningPortfolio[sym].shares > 0 ? runningPortfolio[sym].totalCost / runningPortfolio[sym].shares : 0;
+                      runningPortfolio[sym].shares -= sellQty;
+                      runningPortfolio[sym].totalCost -= (sellQty * currentAvg);
+                  }
+              });
+
+              let monthMarketValue = 0;
+              let monthInvestedCost = 0;
+
+              Object.entries(runningPortfolio).forEach(([sym, data]) => {
+                  if (data.shares > 0) {
+                      monthInvestedCost += data.totalCost;
+                      const price = priceMap[sym] || data.totalCost/data.shares; 
+                      monthMarketValue += data.shares * price;
+                  }
+              });
+
+              return {
+                  name: `${month}月`,
+                  marketValue: Math.round(monthMarketValue),
+                  invested: Math.round(monthInvestedCost)
+              };
+            });
+          }, [allHoldings, activeYear]);
+
+          // --- Helpers & APIs ---
+          const fetchWithDualProxy = async (targetUrl) => {
+            const encodedUrl = encodeURIComponent(targetUrl);
+            const timestamp = Date.now();
+            const proxy1 = `https://api.allorigins.win/raw?url=${encodedUrl}&t=${timestamp}`;
+            const proxy2 = `https://corsproxy.io/?${encodedUrl}`;
+            try {
+              const response = await fetch(proxy1);
+              if (response.ok) return await response.json();
+              throw new Error("Line 1 failed");
+            } catch (e) {
+              try {
+                const response2 = await fetch(proxy2);
+                if (response2.ok) return await response2.json();
+                throw new Error("Line 2 failed");
+              } catch (e2) {
+                return null;
+              }
+            }
+          };
+
+          const fetchYahooQuote = async (symbol) => {
+            const searchSymbol = symbol.trim().toUpperCase();
+            const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${searchSymbol}`;
+            const data = await fetchWithDualProxy(yahooUrl);
+            if (data?.quoteResponse?.result?.[0]) {
+              const result = data.quoteResponse.result[0];
+              return {
+                price: result.regularMarketPrice,
+                change: result.regularMarketChange,
+                changePercent: result.regularMarketChangePercent,
+                source: 'Yahoo'
+              };
+            }
+            return null;
+          };
+
+          const fetchTWSEQuote = async (symbol) => {
+            const code = symbol.trim();
+            const query = `tse_${code}.tw|otc_${code}.tw`;
+            const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
+            const data = await fetchWithDualProxy(twseUrl);
+            const result = data?.msgArray?.find(item => item.c === code);
+
+            if (result) {
+              let price = parseFloat(result.z);
+              if (isNaN(price)) price = parseFloat(result.b?.split('_')[0]);
+              if (isNaN(price)) price = parseFloat(result.a?.split('_')[0]);
+              if (isNaN(price)) price = parseFloat(result.y);
+
+              const yesterday = parseFloat(result.y);
+              const change = price - yesterday;
+              const changePercent = (change / yesterday) * 100;
+
+              return {
+                price: price,
+                change: change,
+                changePercent: changePercent,
+                name: result.n,
+                source: 'TWSE'
+              };
+            }
+            return null;
+          };
+
+          const fetchStockByName = async (name) => {
+            if (!name) return null;
+            const encodedName = encodeURIComponent(name);
+            const searchUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodedName}&newsCount=0&quotesCount=1`;
+            const data = await fetchWithDualProxy(searchUrl);
+            if (data?.quotes?.[0]) {
+              return await fetchYahooQuote(data.quotes[0].symbol);
+            }
+            return null;
+          };
+
+          const fetchStockData = async (symbol, name) => {
+            let result = null;
+            const trimmedSymbol = symbol.trim();
+            const isTaiwanStock = /^\d+[a-zA-Z]?$/.test(trimmedSymbol);
+            if (isTaiwanStock) {
+              result = await fetchTWSEQuote(trimmedSymbol);
+              if (!result) result = await fetchYahooQuote(`${trimmedSymbol}.TW`);
+              if (!result) result = await fetchYahooQuote(`${trimmedSymbol}.TWO`);
+            } else {
+              result = await fetchYahooQuote(trimmedSymbol);
+            }
+            if (!result && name) {
+              result = await fetchStockByName(name);
+            }
+            return result;
+          };
+
+          const handleUpdatePrices = async () => {
+            if (!user || allHoldings.length === 0) return;
+            setUpdatingPrices(true);
+            setPriceUpdateMsg(`正在更新 ${activeYear} 年度股價...`);
+            let successCount = 0;
+            let failCount = 0;
+            const uniqueSymbols = new Set(holdings.map(h => h.symbol));
+            const symbolMap = {}; 
+            const promises = Array.from(uniqueSymbols).map(async (symbol) => {
+               const h = holdings.find(h => h.symbol === symbol); 
+               const quote = await fetchStockData(symbol, h?.name);
+               if (quote) { symbolMap[symbol] = quote; }
+            });
+            await Promise.all(promises);
+            const updates = holdings.map(async (h) => {
+              const quote = symbolMap[h.symbol];
+              if (quote && quote.price) {
+                successCount++;
+                return updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id), {
+                  currentPrice: quote.price,
+                  dailyChange: quote.change || 0,
+                  dailyChangePercent: quote.changePercent || 0,
+                  updatedAt: new Date()
+                });
+              } else {
+                failCount++;
+                return Promise.resolve();
+              }
+            });
+            await Promise.all(updates);
+            setUpdatingPrices(false);
+            setPriceUpdateMsg(`更新完成：成功 ${successCount}，失敗 ${failCount}`);
+            setTimeout(() => setPriceUpdateMsg(""), 4000);
+          };
+
+          const handleFileChange = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            if (!window.XLSX) { alert("Excel 解析元件尚未載入"); return; }
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              try {
+                const data = new Uint8Array(event.target.result);
+                const workbook = window.XLSX.read(data, { type: 'array' });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                const jsonData = window.XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false });
+                processData(jsonData);
+              } catch (error) {
+                console.error("Excel parse error", error);
+                alert("讀取失敗");
+              }
+            };
+            reader.readAsArrayBuffer(file);
+          };
+
+          const processData = (rows) => {
+            const portfolio = [];
+            rows.forEach((row) => {
+              if (!row || row.length < 6) return;
+              const dateStr = row[0]?.toString().trim();
+              const symbol = row[1]?.toString().trim();
+              const name = row[2]?.toString().trim();
+              const type = row[3]?.toString().trim();
+              if (type !== '買' && type !== '賣') return;
+              const shares = parseFloat(row[4]);
+              const price = parseFloat(row[5]);
+              if (isNaN(shares) || isNaN(price)) return;
+              const dateParts = dateStr ? dateStr.split('-') : [];
+              let year = activeYear;
+              if (dateParts.length === 3) year = dateParts[0];
+              const cost = price; 
+              portfolio.push({
+                  symbol, name, shares: type === '買' ? shares : -shares, 
+                  cost, date: dateStr, year, type
+              });
+            });
+            setCsvPreview(portfolio);
+          };
+
+          const handleExecuteImport = async () => {
+            if (!user || !importTargetMemberId || csvPreview.length === 0) return;
+            try {
+              const batch = writeBatch(db);
+              const holdingsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'holdings');
+              csvPreview.forEach(item => {
+                const newDocRef = doc(holdingsRef);
+                batch.set(newDocRef, {
+                  memberId: importTargetMemberId,
+                  symbol: item.symbol,
+                  name: item.name,
+                  shares: item.shares,
+                  cost: item.cost,
+                  currentPrice: item.cost,
+                  date: item.date, 
+                  year: item.year, 
+                  updatedAt: new Date()
+                });
+              });
+              await batch.commit();
+              setIsImportOpen(false);
+              setCsvPreview([]);
+              alert(`成功匯入 ${csvPreview.length} 筆資料！`);
+              if (csvPreview[0]?.year) { setActiveYear(csvPreview[0].year); }
+              setActiveTab('holdings');
+            } catch (e) {
+              console.error("Import error", e);
+              alert("匯入失敗");
+            }
+          };
+
+          const createDadAndSet = async () => {
+            if (!user) return;
+            try {
+              const dad = members.find(m => m.name.includes("爸爸"));
+              if (dad) { setImportTargetMemberId(dad.id); } else {
+                const docRef = await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'members'), {
+                  name: "爸爸",
+                  createdAt: new Date()
+                });
+                setImportTargetMemberId(docRef.id);
+              }
+            } catch(e) {}
+          };
+
+          const getMemberName = (id) => members.find(m => m.id === id)?.name || "未知成員";
+
+          const totalAssets = aggregatedHoldings.reduce((sum, h) => sum + h.marketValue, 0);
+          const totalCost = aggregatedHoldings.reduce((sum, h) => sum + h.totalCost, 0);
+          const totalRealizedProfit = aggregatedHoldings.reduce((sum, h) => sum + h.realizedProfit, 0);
+          const totalUnrealizedProfit = aggregatedHoldings.reduce((sum, h) => sum + h.unrealizedProfit, 0);
+          const totalProfit = totalRealizedProfit + totalUnrealizedProfit;
+
+          const chartData = useMemo(() => {
+            const data = {};
+            aggregatedHoldings.forEach(h => {
+              const name = getMemberName(h.memberId);
+              if (!data[name]) data[name] = 0;
+              data[name] += h.marketValue;
+            });
+            return Object.entries(data).map(([name, value]) => ({ name, value }));
+          }, [aggregatedHoldings, members]);
+
+          // --- Handlers ---
+          const handleAddMember = async () => {
+            if (!newMemberName.trim() || !user) return;
+            await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'members'), {
+              name: newMemberName.trim(),
+              createdAt: new Date()
+            });
+            setNewMemberName("");
+            setIsAddMemberOpen(false);
+          };
+
+          const handleDeleteMember = async (id) => {
+            if (!confirm("確定刪除成員？")) return;
+            await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'members', id));
+          };
+
+          const handleSaveHolding = async () => {
+            if (!user || !holdingForm.symbol || !holdingForm.memberId) return;
+            const derivedYear = holdingForm.date ? holdingForm.date.split('-')[0] : (holdingForm.year || activeYear);
+            const rawPrice = Number(holdingForm.price);
+            const rawShares = Number(holdingForm.shares);
+            const rawFee = Number(holdingForm.fee) || 0;
+            let finalShares = rawShares;
+            let finalCost = rawPrice;
+            if (holdingForm.type === 'buy') {
+                finalShares = Math.abs(rawShares);
+                finalCost = (rawPrice * finalShares + rawFee) / finalShares;
+            } else {
+                finalShares = -Math.abs(rawShares);
+                finalCost = (rawPrice * Math.abs(finalShares) - rawFee) / Math.abs(finalShares);
+            }
+            const data = {
+              memberId: holdingForm.memberId,
+              symbol: holdingForm.symbol.toUpperCase(),
+              name: holdingForm.name,
+              shares: finalShares,
+              cost: finalCost,
+              note: holdingForm.note,
+              date: holdingForm.date, 
+              year: derivedYear,
+              updatedAt: new Date()
+            };
+            if (editingHolding) {
+              await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', editingHolding.id), data);
+            } else {
+              data.currentPrice = Number(holdingForm.price); 
+              await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'holdings'), data);
+            }
+            setEditingHolding(null);
+            setHoldingForm({ 
+                memberId: "", symbol: "", name: "", shares: "", price: "", fee: "", note: "", 
+                type: "buy", date: new Date().toISOString().split('T')[0], year: activeYear 
+            });
+            setIsAddHoldingOpen(false);
+          };
+
+          const handleDeleteHolding = async (id) => deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', id));
+
+          const openAddHolding = () => {
+            setEditingHolding(null);
+            setHoldingForm({ 
+                memberId: members[0]?.id || "", symbol: "", name: "", shares: "", price: "", fee: "", note: "", 
+                type: "buy", date: new Date().toISOString().split('T')[0], year: activeYear 
+            });
+            setIsAddHoldingOpen(true);
+          };
+
+          const openEditHolding = (h) => {
+            setEditingHolding(h);
+            setHoldingForm({ 
+                ...h, 
+                price: h.cost, 
+                shares: Math.abs(h.shares), 
+                type: h.shares >= 0 ? 'buy' : 'sell',
+                fee: 0, 
+                note: h.note || "", 
+                date: h.date || new Date().toISOString().split('T')[0] 
+            });
+            setIsAddHoldingOpen(true);
+          };
+
+          const calculateEstimate = () => {
+              const p = Number(holdingForm.price) || 0;
+              const s = Number(holdingForm.shares) || 0;
+              const f = Number(holdingForm.fee) || 0;
+              if (holdingForm.type === 'buy') { return p * s + f; } else { return p * s - f; }
+          };
+
+          // --- Security Handlers ---
+          const handleUnlock = () => {
+            if (pinInput === storedPin) { setIsLocked(false); setPinInput(""); } else { alert("密碼錯誤，請重試"); }
+          };
+
+          const handleSetPin = async () => {
+            if (!newPin) return;
+            try {
+              await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security'), { pin: newPin });
+              setHasPin(true);
+              setStoredPin(newPin);
+              setNewPin("");
+              setIsSettingsOpen(false);
+              alert("密碼設定成功！下次進入時將需要輸入密碼。");
+            } catch (e) { console.error(e); alert("設定失敗"); }
+          };
+
+          const handleRemovePin = async () => {
+            if (!confirm("確定要移除密碼保護嗎？")) return;
+            try {
+              await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security'));
+              setHasPin(false);
+              setStoredPin(null);
+              setIsSettingsOpen(false);
+              alert("密碼已移除");
+            } catch (e) { console.error(e); }
+          };
+
+          // --- Render Components ---
+          const renderMonthFilter = () => (
+            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+               <button onClick={() => setActiveMonth('all')} className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${activeMonth === 'all' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>全年</button>
+               {[...Array(12)].map((_, i) => {
+                 const m = (i + 1).toString();
+                 return <button key={m} onClick={() => setActiveMonth(m)} className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${activeMonth === m ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>{m}月</button>;
+               })}
+            </div>
+          );
+
+          if (isLocked && hasPin) {
+            return (
+              <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+                <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
+                  <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4"><Lock size={32} /></div>
+                  <h2 className="text-2xl font-bold text-slate-800 mb-2">App 已鎖定</h2>
+                  <p className="text-slate-500 mb-6">請輸入密碼以存取您的資產</p>
+                  <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} className="w-full px-4 py-3 text-center text-2xl tracking-widest bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4" placeholder="••••" maxLength={6}/>
+                  <Button onClick={handleUnlock} className="w-full justify-center"><Unlock size={18} /> 解鎖</Button>
+                </div>
+              </div>
+            );
+          }
+
+          if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-400">載入中...</div>;
+
+          return (
+            <div className="min-h-screen bg-slate-50 pb-20 font-sans text-slate-900">
+              <header className="bg-white sticky top-0 z-10 border-b border-slate-200 px-4 py-3 shadow-sm flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <h1 className="font-bold text-lg bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">資產管家</h1>
+                  <div className="relative group">
+                    <select value={activeYear} onChange={(e) => setActiveYear(e.target.value)} className="appearance-none bg-slate-100 text-slate-700 font-bold text-sm px-3 py-1 pr-8 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer">{availableYears.map(y => <option key={y} value={y}>{y} 年</option>)}</select>
+                    <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"/>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2"><button onClick={() => setIsSettingsOpen(true)} className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><Settings size={20} /></button></div>
+              </header>
+
+              <main className="max-w-2xl mx-auto p-4">
+                {activeTab === 'overview' && (
+                  <div className="space-y-6 animate-in">
+                    {renderMonthFilter()}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <Card className="bg-gradient-to-br from-blue-600 to-indigo-700 text-white p-6 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-16 -mt-16 pointer-events-none"></div>
+                        <div className="flex items-center gap-2 opacity-80 mb-2"><DollarSign size={18} /><span className="text-sm font-medium">{activeYear} 年 {activeMonth === 'all' ? '全年' : `${activeMonth}月`} 總資產</span></div>
+                        <div className="text-4xl font-bold tracking-tight mb-3 text-shadow-sm">{formatCurrency(totalAssets)}</div>
+                        <div className="flex items-center gap-2 text-xs font-medium bg-white/10 w-fit px-3 py-1.5 rounded-full backdrop-blur-sm"><span>總投入: {formatNumber(totalCost)}</span></div>
+                      </Card>
+                      <Card className={`p-6 ${totalProfit >= 0 ? 'bg-red-50 border-red-100' : 'bg-emerald-50 border-emerald-100'}`}>
+                        <div className="flex items-center gap-2 text-slate-500 mb-2">{totalProfit >= 0 ? <TrendingUp size={18} className="text-red-600"/> : <TrendingDown size={18} className="text-emerald-600"/>}<span className="text-sm font-medium">總損益 (含已實現)</span></div>
+                        <div className={`text-3xl font-bold tracking-tight mb-2 ${totalProfit >= 0 ? 'text-red-700' : 'text-emerald-700'}`}>{totalProfit > 0 ? "+" : ""}{formatCurrency(totalProfit)}</div>
+                        <div className="grid grid-cols-2 gap-2 text-xs opacity-75"><div>未實現: {formatCurrency(totalUnrealizedProfit)}</div><div>已實現: {formatCurrency(totalRealizedProfit)}</div></div>
+                      </Card>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                       <div className="flex justify-between items-center px-1"><span className="text-xs text-slate-400 flex items-center gap-1"><Clock size={12} />{lastUpdateTime ? `最後更新: ${lastUpdateTime.toLocaleTimeString()}` : "尚未更新"}</span></div>
+                       <Button onClick={handleUpdatePrices} isLoading={updatingPrices} variant="secondary" className="w-full bg-white border border-blue-100 text-blue-600 hover:bg-blue-50"><RefreshCw size={18} className={updatingPrices ? "animate-spin" : ""} />{updatingPrices ? `正在更新 ${activeYear} 年度股價...` : "更新即時股價"}</Button>
+                       {priceUpdateMsg && <div className={`text-xs text-center flex items-center justify-center gap-1 ${priceUpdateMsg.includes('失敗') ? 'text-red-500' : 'text-emerald-600'}`}><AlertCircle size={12} /> {priceUpdateMsg}</div>}
+                    </div>
+                    <Card className="p-6">
+                      <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Activity size={20} className="text-blue-500"/>{activeYear} 年度資產趨勢</h3>
+                      <div className="h-64 w-full text-xs">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={trendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                            <defs><linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3B82F6" stopOpacity={0.1}/><stop offset="95%" stopColor="#3B82F6" stopOpacity={0}/></linearGradient></defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0"/><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748B'}} /><YAxis hide domain={['auto', 'auto']} /><RechartsTooltip formatter={(value) => formatCurrency(value)} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}/><Legend verticalAlign="top" height={36}/>
+                            <Area type="monotone" dataKey="marketValue" name="總市值 (估)" stroke="#3B82F6" strokeWidth={2} fillOpacity={1} fill="url(#colorValue)" /><Line type="monotone" dataKey="invested" name="投入成本" stroke="#94A3B8" strokeWidth={2} strokeDasharray="5 5" dot={false} />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </Card>
+                    <Card className="p-6">
+                      <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><PieChartIcon size={20} className="text-blue-500"/>資產分佈</h3>
+                      <div className="h-64 w-full">{chartData.length > 0 ? (<ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={chartData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">{chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}</Pie><RechartsTooltip formatter={(value) => formatCurrency(value)} /><Legend /></PieChart></ResponsiveContainer>) : (<div className="h-full flex items-center justify-center text-slate-400">尚無資產資料</div>)}</div>
+                    </Card>
                   </div>
                 )}
-              </Card>
-            ))
-          )
-        )}
-
-        {holdingViewMode === 'history' && (
-          holdings.length === 0 ? (
-             <div className="text-center py-10 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-              無交易紀錄
-            </div>
-          ) : (
-            holdings.map((h) => (
-              <Card key={h.id} className="p-4 flex flex-col gap-3 opacity-90 hover:opacity-100 transition-opacity">
-                <div className="flex justify-between items-start">
-                  <div>
-                      <div className="flex items-center gap-2">
-                       <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${h.shares >= 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                         {h.shares >= 0 ? '買' : '賣'}
-                       </span>
-                       <span className="font-bold text-lg text-slate-800">{h.symbol}</span>
-                       <span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">{getMemberName(h.memberId)}</span>
-                      </div>
-                      <div className="flex flex-col gap-0.5 mt-0.5">
-                        <span className="text-sm text-slate-500">{h.name}</span>
-                        
-                        {h.note && (
-                          <span className="text-xs text-slate-600 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded w-fit flex items-center gap-1 mt-0.5">
-                            <StickyNote size={10} /> {h.note}
-                          </span>
-                        )}
-
-                        <div className="flex items-center gap-2 mt-0.5">
-                          {h.date && <span className="text-xs text-slate-400 flex items-center gap-1"><Calendar size={10}/> {h.date}</span>}
+                {activeTab === 'holdings' && (
+                  <div className="space-y-4 animate-in">
+                    <div className="flex flex-col gap-3">
+                      <div className="flex justify-between items-center">
+                        <div className="flex bg-slate-100 rounded-lg p-1 gap-1">
+                           <button onClick={() => setHoldingViewMode('summary')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all ${holdingViewMode === 'summary' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}><Layers size={14}/> 庫存總覽</button>
+                           <button onClick={() => setHoldingViewMode('history')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all ${holdingViewMode === 'history' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}><List size={14}/> 交易紀錄</button>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button onClick={() => { setIsImportOpen(true); createDadAndSet(); }} variant="secondary" className="px-3 py-1.5 text-xs"><Upload size={14} /> 匯入</Button>
+                          <Button onClick={openAddHolding} disabled={members.length === 0} className="px-3 py-1.5 text-xs"><Plus size={14} /> 新增</Button>
                         </div>
                       </div>
+                      {renderMonthFilter()}
+                    </div>
+                    <div className="grid gap-3">
+                      {holdingViewMode === 'summary' && (aggregatedHoldings.length === 0 ? <div className="text-center py-10 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">無持股庫存</div> : aggregatedHoldings.map((g) => (
+                        <Card key={`${g.memberId}_${g.symbol}`} className="p-4 flex flex-col gap-3 border-l-4 border-l-blue-500">
+                          <div className="flex justify-between items-start">
+                            <div><div className="flex items-center gap-2"><span className="font-bold text-lg text-slate-800">{g.symbol}</span><span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">{getMemberName(g.memberId)}</span></div><div className="flex flex-col gap-0.5 mt-0.5"><span className="text-sm text-slate-500">{g.name}</span><div className="flex items-center gap-2 mt-0.5">{g.dailyChangePercent !== undefined && <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${g.dailyChangePercent > 0 ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}`}>{g.dailyChangePercent > 0 ? '▲' : '▼'} {Math.abs(g.dailyChangePercent).toFixed(2)}%</span>}</div></div></div>
+                            <div className={`text-right ${g.unrealizedProfit >= 0 ? 'text-red-600' : 'text-emerald-600'}`}><div className="font-bold text-lg">{g.unrealizedProfit > 0 ? "+" : ""}{formatNumber(Math.round(g.unrealizedProfit))}</div><div className="text-xs font-medium">{g.unrealizedProfitPercent.toFixed(2)}% (未實現)</div></div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-sm pt-2 border-t border-slate-100"><div className="text-slate-500"><span className="text-xs uppercase text-slate-400 block">持股 / 平均成本</span>{formatNumber(g.shares)} / {formatNumber(Math.round(g.avgCost))}</div><div className="text-slate-500 text-right"><span className="text-xs uppercase text-slate-400 block">市值 / 現價</span>{formatNumber(Math.round(g.marketValue))} / {formatNumber(g.currentPrice)}</div></div>
+                          {g.realizedProfit !== 0 && <div className="mt-1 pt-2 border-t border-dashed border-slate-200 flex justify-between items-center text-xs"><span className="text-slate-400">已實現損益</span><span className={`font-bold ${g.realizedProfit >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>{g.realizedProfit > 0 ? "+" : ""}{formatNumber(Math.round(g.realizedProfit))}</span></div>}
+                        </Card>
+                      )))}
+                      {holdingViewMode === 'history' && (holdings.length === 0 ? <div className="text-center py-10 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">無交易紀錄</div> : holdings.map((h) => (
+                        <Card key={h.id} className="p-4 flex flex-col gap-3 opacity-90 hover:opacity-100 transition-opacity">
+                          <div className="flex justify-between items-start">
+                            <div><div className="flex items-center gap-2"><span className={`text-xs font-bold px-1.5 py-0.5 rounded ${h.shares >= 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>{h.shares >= 0 ? '買' : '賣'}</span><span className="font-bold text-lg text-slate-800">{h.symbol}</span><span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">{getMemberName(h.memberId)}</span></div><div className="flex flex-col gap-0.5 mt-0.5"><span className="text-sm text-slate-500">{h.name}</span>{h.note && <span className="text-xs text-slate-600 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded w-fit flex items-center gap-1 mt-0.5"><StickyNote size={10} /> {h.note}</span>}<div className="flex items-center gap-2 mt-0.5">{h.date && <span className="text-xs text-slate-400 flex items-center gap-1"><Calendar size={10}/> {h.date}</span>}</div></div></div>
+                            <div className="text-right text-slate-700"><div className="font-bold text-lg">{formatNumber(Math.round(Math.abs(h.shares) * h.cost))}</div><div className="text-xs font-medium text-slate-400">總金額</div></div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-sm pt-2 border-t border-slate-100"><div className="text-slate-500"><span className="text-xs uppercase text-slate-400 block">成交價</span>{formatNumber(h.cost)}</div><div className="text-slate-500 text-right"><span className="text-xs uppercase text-slate-400 block">股數</span>{formatNumber(Math.abs(h.shares))}</div></div>
+                          <div className="flex justify-end gap-2 mt-1"><Button variant="outline" className="px-3 py-1 text-xs" onClick={() => openEditHolding(h)}>編輯</Button><Button variant="danger" className="px-3 py-1 text-xs bg-white border border-red-100" onClick={() => handleDeleteHolding(h.id)}>刪除</Button></div>
+                        </Card>
+                      )))}
+                    </div>
                   </div>
-                  <div className="text-right text-slate-700">
-                    <div className="font-bold text-lg">{formatNumber(Math.round(Math.abs(h.shares) * h.cost))}</div>
-                    <div className="text-xs font-medium text-slate-400">總金額</div>
+                )}
+                {activeTab === 'members' && (
+                  <div className="space-y-4 animate-in">
+                    <div className="flex justify-between items-center"><h2 className="text-xl font-bold text-slate-800">成員管理</h2><Button onClick={() => setIsAddMemberOpen(true)} variant="secondary"><Plus size={18} /> 新增</Button></div>
+                    <div className="grid gap-3">
+                      {members.map(m => (<Card key={m.id} className="p-4 flex items-center justify-between"><div className="flex items-center gap-3"><div className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-lg">{m.name.charAt(0)}</div><div><div className="font-bold text-slate-800">{m.name}</div><div className="text-xs text-slate-500">資產: {formatCurrency(aggregatedHoldings.filter(h => h.memberId === m.id).reduce((sum, h) => sum + h.marketValue, 0))}</div></div></div><button onClick={() => handleDeleteMember(m.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={18} /></button></Card>))}
+                      {members.length === 0 && <div className="text-center py-8 text-slate-400">尚未新增成員</div>}
+                    </div>
                   </div>
+                )}
+              </main>
+
+              <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-2 pb-safe shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+                <div className="max-w-2xl mx-auto flex justify-around">
+                  <button onClick={() => setActiveTab('overview')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors ${activeTab === 'overview' ? 'text-blue-600' : 'text-slate-400'}`}><PieChartIcon size={24} strokeWidth={activeTab === 'overview' ? 2.5 : 2} /><span className="text-[10px] font-medium">總覽</span></button>
+                  <button onClick={() => setActiveTab('holdings')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors ${activeTab === 'holdings' ? 'text-blue-600' : 'text-slate-400'}`}><TrendingUp size={24} strokeWidth={activeTab === 'holdings' ? 2.5 : 2} /><span className="text-[10px] font-medium">持股</span></button>
+                  <button onClick={() => setActiveTab('members')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors ${activeTab === 'members' ? 'text-blue-600' : 'text-slate-400'}`}><Users size={24} strokeWidth={activeTab === 'members' ? 2.5 : 2} /><span className="text-[10px] font-medium">成員</span></button>
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-sm pt-2 border-t border-slate-100">
-                  <div className="text-slate-500">
-                    <span className="text-xs uppercase text-slate-400 block">成交價</span>
-                    {formatNumber(h.cost)}
+              </nav>
+
+              <Modal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} title="安全性設定">
+                <div className="space-y-4">
+                  <div className="p-4 bg-slate-50 rounded-lg text-center">
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-2 ${hasPin ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-200 text-slate-500'}`}>{hasPin ? <ShieldCheck size={24} /> : <Lock size={24} />}</div>
+                    <h3 className="font-bold text-slate-800">{hasPin ? "App 已啟用密碼保護" : "尚未設定密碼"}</h3><p className="text-xs text-slate-500 mt-1">設定密碼後，每次開啟 App 需輸入密碼才能查看資產。</p>
                   </div>
-                  <div className="text-slate-500 text-right">
-                    <span className="text-xs uppercase text-slate-400 block">股數</span>
-                    {formatNumber(Math.abs(h.shares))}
-                  </div>
+                  <div className="space-y-2"><Input type="text" placeholder="輸入新密碼 (建議 4-6 位數)" value={newPin} onChange={e => setNewPin(e.target.value)} /><Button onClick={handleSetPin} className="w-full">{hasPin ? "修改密碼" : "設定密碼"}</Button>{hasPin && <Button onClick={handleRemovePin} variant="danger" className="w-full bg-white border border-red-200">移除密碼保護</Button>}</div>
                 </div>
-                <div className="flex justify-end gap-2 mt-1">
-                  <Button variant="outline" className="px-3 py-1 text-xs" onClick={() => openEditHolding(h)}>編輯</Button>
-                  <Button variant="danger" className="px-3 py-1 text-xs bg-white border border-red-100" onClick={() => handleDeleteHolding(h.id)}>刪除</Button>
+              </Modal>
+
+              <Modal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} title="匯入股票 Excel (XLSX)">
+                <div className="space-y-4">
+                  <div className="p-3 bg-blue-50 text-blue-800 text-sm rounded-lg"><p>請上傳包含交易紀錄的 Excel 檔案。系統會自動根據「買/賣」計算出最終的股數與平均成本。</p></div>
+                  <div className="flex gap-3"><div className="flex flex-col gap-1 w-full"><label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">匯入對象</label><select value={importTargetMemberId} onChange={e => setImportTargetMemberId(e.target.value)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"><option value="" disabled>選擇成員</option>{members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></div></div>
+                  <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => fileInputRef.current.click()}><Upload className="mx-auto text-slate-400 mb-2" size={32} /><p className="text-sm text-slate-500">點擊上傳 .xlsx 檔案</p><input ref={fileInputRef} type="file" accept=".xlsx, .xls" onChange={handleFileChange} className="hidden"/></div>
+                  {csvPreview.length > 0 && <div className="mt-4 animate-in"><h4 className="font-bold text-sm text-slate-700 mb-2 flex items-center gap-2"><FileText size={16}/> 預覽匯入結果 ({csvPreview.length} 檔股票)</h4><div className="max-h-40 overflow-y-auto border border-slate-200 rounded-lg text-xs"><table className="w-full text-left"><thead className="bg-slate-50 sticky top-0"><tr><th className="p-2">日期</th><th className="p-2">代號</th><th className="p-2">股數</th><th className="p-2">均價</th></tr></thead><tbody>{csvPreview.map((item, idx) => (<tr key={idx} className="border-t border-slate-100"><td className="p-2 text-slate-500">{item.date}</td><td className="p-2 font-medium">{item.symbol} {item.name}</td><td className="p-2">{item.shares}</td><td className="p-2">{item.cost}</td></tr>))}</tbody></table></div><Button onClick={handleExecuteImport} variant="success" className="w-full mt-4">確認匯入至「{getMemberName(importTargetMemberId)}」</Button></div>}
                 </div>
-              </Card>
-            ))
-          )
-        )}
-      </div>
-    </div>
-  );
+              </Modal>
 
-  const renderMembers = () => (
-    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold text-slate-800">成員管理</h2>
-        <Button onClick={() => setIsAddMemberOpen(true)} variant="secondary">
-          <Plus size={18} /> 新增
-        </Button>
-      </div>
-      <div className="grid gap-3">
-        {members.map(m => (
-          <Card key={m.id} className="p-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-lg">
-                {m.name.charAt(0)}
-              </div>
-              <div>
-                <div className="font-bold text-slate-800">{m.name}</div>
-                <div className="text-xs text-slate-500">
-                  資產: {formatCurrency(aggregatedHoldings.filter(h => h.memberId === m.id).reduce((sum, h) => sum + h.marketValue, 0))}
+              <Modal isOpen={isAddMemberOpen} onClose={() => setIsAddMemberOpen(false)} title="新增家庭成員"><div className="space-y-4"><Input label="成員名稱" placeholder="例如：爸爸" value={newMemberName} onChange={e => setNewMemberName(e.target.value)} /><Button onClick={handleAddMember} className="w-full"><Plus size={18} /> 新增</Button></div></Modal>
+
+              <Modal isOpen={isAddHoldingOpen} onClose={() => setIsAddHoldingOpen(false)} title={editingHolding ? "編輯持股" : "新增交易"}>
+                <div className="space-y-4">
+                  <div className="flex bg-slate-100 rounded-lg p-1"><button className={`flex-1 py-1.5 rounded-md text-sm font-bold transition-all flex items-center justify-center gap-2 ${holdingForm.type === 'buy' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-400'}`} onClick={() => setHoldingForm({...holdingForm, type: 'buy'})}>買進 (Buy)</button><button className={`flex-1 py-1.5 rounded-md text-sm font-bold transition-all flex items-center justify-center gap-2 ${holdingForm.type === 'sell' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`} onClick={() => setHoldingForm({...holdingForm, type: 'sell'})}>賣出 (Sell)</button></div>
+                  <div className="flex flex-col gap-1"><label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">持有成員</label><select value={holdingForm.memberId} onChange={e => setHoldingForm({...holdingForm, memberId: e.target.value})} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"><option value="" disabled>選擇成員</option>{members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></div>
+                  <div className="flex gap-3"><div className="flex flex-col gap-1 w-full"><label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">交易日期</label><input type="date" value={holdingForm.date} onChange={e => { const newDate = e.target.value; const newYear = newDate ? newDate.split('-')[0] : holdingForm.year; setHoldingForm({ ...holdingForm, date: newDate, year: newYear }); }} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"/></div></div>
+                  <div className="grid grid-cols-2 gap-3"><Input label="股票代號" placeholder="例如：2330" value={holdingForm.symbol} onChange={e => setHoldingForm({...holdingForm, symbol: e.target.value})} /><Input label="股票名稱" placeholder="台積電" value={holdingForm.name} onChange={e => setHoldingForm({...holdingForm, name: e.target.value})} /></div>
+                  <div className="grid grid-cols-2 gap-3"><Input label="成交股數" type="number" placeholder="1000" value={holdingForm.shares} onChange={e => setHoldingForm({...holdingForm, shares: e.target.value})} /><Input label="成交單價" type="number" placeholder="500" value={holdingForm.price} onChange={e => setHoldingForm({...holdingForm, price: e.target.value})} /></div>
+                  <div className="grid grid-cols-2 gap-3"><Input label="手續費" type="number" placeholder="20" value={holdingForm.fee} onChange={e => setHoldingForm({...holdingForm, fee: e.target.value})} /><div className="flex flex-col gap-1 justify-center"><span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">預估總金額</span><div className={`text-lg font-bold ${holdingForm.type === 'buy' ? 'text-red-600' : 'text-emerald-600'}`}>{formatNumber(calculateEstimate())}</div></div></div>
+                  <Input label="備註" placeholder="例如：定期定額、波段..." value={holdingForm.note} onChange={e => setHoldingForm({...holdingForm, note: e.target.value})} /><Button onClick={handleSaveHolding} className="w-full mt-2" variant={holdingForm.type === 'buy' ? 'buyActive' : 'sellActive'}><Save size={18} /> {editingHolding ? "儲存修改" : "確認新增"}</Button>
                 </div>
-              </div>
+              </Modal>
             </div>
-            <button onClick={() => handleDeleteMember(m.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors">
-              <Trash2 size={18} />
-            </button>
-          </Card>
-        ))}
-        {members.length === 0 && <div className="text-center py-8 text-slate-400">尚未新增成員</div>}
-      </div>
-    </div>
-  );
+          );
+        }
 
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-400">載入中...</div>;
-
-  return (
-    <div className="min-h-screen bg-slate-50 pb-20 font-sans text-slate-900">
-      <header className="bg-white sticky top-0 z-10 border-b border-slate-200 px-4 py-3 shadow-sm flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <h1 className="font-bold text-lg bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-            資產管家
-          </h1>
-          <div className="relative group">
-            <select 
-              value={activeYear} 
-              onChange={(e) => setActiveYear(e.target.value)}
-              className="appearance-none bg-slate-100 text-slate-700 font-bold text-sm px-3 py-1 pr-8 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-            >
-              {availableYears.map(y => <option key={y} value={y}>{y} 年</option>)}
-            </select>
-            <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"/>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-           <button onClick={() => setIsSettingsOpen(true)} className="p-2 hover:bg-slate-100 rounded-full text-slate-500">
-             <Settings size={20} />
-           </button>
-        </div>
-      </header>
-
-      <main className="max-w-2xl mx-auto p-4">
-        {activeTab === 'overview' && renderOverview()}
-        {activeTab === 'holdings' && renderHoldings()}
-        {activeTab === 'members' && renderMembers()}
-      </main>
-
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-2 pb-safe shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
-        <div className="max-w-2xl mx-auto flex justify-around">
-          <button onClick={() => setActiveTab('overview')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors ${activeTab === 'overview' ? 'text-blue-600' : 'text-slate-400'}`}>
-            <PieChartIcon size={24} strokeWidth={activeTab === 'overview' ? 2.5 : 2} />
-            <span className="text-[10px] font-medium">總覽</span>
-          </button>
-          <button onClick={() => setActiveTab('holdings')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors ${activeTab === 'holdings' ? 'text-blue-600' : 'text-slate-400'}`}>
-            <TrendingUp size={24} strokeWidth={activeTab === 'holdings' ? 2.5 : 2} />
-            <span className="text-[10px] font-medium">持股</span>
-          </button>
-          <button onClick={() => setActiveTab('members')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors ${activeTab === 'members' ? 'text-blue-600' : 'text-slate-400'}`}>
-            <Users size={24} strokeWidth={activeTab === 'members' ? 2.5 : 2} />
-            <span className="text-[10px] font-medium">成員</span>
-          </button>
-        </div>
-      </nav>
-
-      {/* Settings Modal */}
-      <Modal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} title="安全性設定">
-        <div className="space-y-4">
-          <div className="p-4 bg-slate-50 rounded-lg text-center">
-            <div className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-2 ${hasPin ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-200 text-slate-500'}`}>
-              {hasPin ? <ShieldCheck size={24} /> : <Lock size={24} />}
-            </div>
-            <h3 className="font-bold text-slate-800">{hasPin ? "App 已啟用密碼保護" : "尚未設定密碼"}</h3>
-            <p className="text-xs text-slate-500 mt-1">設定密碼後，每次開啟 App 需輸入密碼才能查看資產。</p>
-          </div>
-
-          <div className="space-y-2">
-            <Input 
-              type="text" 
-              placeholder="輸入新密碼 (建議 4-6 位數)" 
-              value={newPin} 
-              onChange={e => setNewPin(e.target.value)} 
-            />
-            <Button onClick={handleSetPin} className="w-full">
-              {hasPin ? "修改密碼" : "設定密碼"}
-            </Button>
-            {hasPin && (
-              <Button onClick={handleRemovePin} variant="danger" className="w-full bg-white border border-red-200">
-                移除密碼保護
-              </Button>
-            )}
-          </div>
-        </div>
-      </Modal>
-
-      {/* Import Modal */}
-      <Modal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} title="匯入股票 Excel (XLSX)">
-        <div className="space-y-4">
-          <div className="p-3 bg-blue-50 text-blue-800 text-sm rounded-lg">
-            <p>請上傳包含交易紀錄的 Excel 檔案。系統會自動根據「買/賣」計算出最終的股數與平均成本。</p>
-          </div>
-
-          <div className="flex gap-3">
-            <div className="flex flex-col gap-1 w-full">
-               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">匯入對象</label>
-               <select
-                 value={importTargetMemberId}
-                 onChange={e => setImportTargetMemberId(e.target.value)}
-                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-               >
-                 <option value="" disabled>選擇成員</option>
-                 {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-               </select>
-            </div>
-          </div>
-
-          <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => fileInputRef.current.click()}>
-            <Upload className="mx-auto text-slate-400 mb-2" size={32} />
-            <p className="text-sm text-slate-500">點擊上傳 .xlsx 檔案</p>
-            <input 
-              ref={fileInputRef}
-              type="file" 
-              accept=".xlsx, .xls"
-              onChange={handleFileChange}
-              className="hidden"
-            />
-          </div>
-
-          {csvPreview.length > 0 && (
-            <div className="mt-4 animate-in fade-in slide-in-from-bottom-2">
-              <h4 className="font-bold text-sm text-slate-700 mb-2 flex items-center gap-2">
-                  <FileText size={16}/> 預覽匯入結果 ({csvPreview.length} 檔股票)
-              </h4>
-              <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-lg text-xs">
-                <table className="w-full text-left">
-                  <thead className="bg-slate-50 sticky top-0">
-                    <tr>
-                      <th className="p-2">日期</th>
-                      <th className="p-2">代號</th>
-                      <th className="p-2">股數</th>
-                      <th className="p-2">均價</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {csvPreview.map((item, idx) => (
-                      <tr key={idx} className="border-t border-slate-100">
-                        <td className="p-2 text-slate-500">{item.date}</td>
-                        <td className="p-2 font-medium">{item.symbol} {item.name}</td>
-                        <td className="p-2">{item.shares}</td>
-                        <td className="p-2">{item.cost}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <Button onClick={handleExecuteImport} variant="success" className="w-full mt-4">
-                  確認匯入至「{getMemberName(importTargetMemberId)}」
-              </Button>
-            </div>
-          )}
-        </div>
-      </Modal>
-
-      {/* Add Member Modal */}
-      <Modal isOpen={isAddMemberOpen} onClose={() => setIsAddMemberOpen(false)} title="新增家庭成員">
-        <div className="space-y-4">
-          <Input label="成員名稱" placeholder="例如：爸爸" value={newMemberName} onChange={e => setNewMemberName(e.target.value)} />
-          <Button onClick={handleAddMember} className="w-full"><Plus size={18} /> 新增</Button>
-        </div>
-      </Modal>
-
-      {/* Add Holding Modal */}
-      <Modal isOpen={isAddHoldingOpen} onClose={() => setIsAddHoldingOpen(false)} title={editingHolding ? "編輯持股" : "新增交易"}>
-        <div className="space-y-4">
-           
-          {/* Buy / Sell Toggle */}
-          <div className="flex bg-slate-100 rounded-lg p-1">
-            <button 
-              className={`flex-1 py-1.5 rounded-md text-sm font-bold transition-all flex items-center justify-center gap-2 ${holdingForm.type === 'buy' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-400'}`}
-              onClick={() => setHoldingForm({...holdingForm, type: 'buy'})}
-            >
-              買進 (Buy)
-            </button>
-            <button 
-              className={`flex-1 py-1.5 rounded-md text-sm font-bold transition-all flex items-center justify-center gap-2 ${holdingForm.type === 'sell' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`}
-              onClick={() => setHoldingForm({...holdingForm, type: 'sell'})}
-            >
-              賣出 (Sell)
-            </button>
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">持有成員</label>
-            <select
-              value={holdingForm.memberId}
-              onChange={e => setHoldingForm({...holdingForm, memberId: e.target.value})}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="" disabled>選擇成員</option>
-              {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-          </div>
-
-          <div className="flex gap-3">
-            <div className="flex flex-col gap-1 w-full">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">交易日期</label>
-              <input
-                type="date"
-                value={holdingForm.date}
-                onChange={e => {
-                  const newDate = e.target.value;
-                  const newYear = newDate ? newDate.split('-')[0] : holdingForm.year;
-                  setHoldingForm({ ...holdingForm, date: newDate, year: newYear });
-                }}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          </div>
-           
-          <div className="grid grid-cols-2 gap-3">
-              <Input label="股票代號" placeholder="例如：2330" value={holdingForm.symbol} onChange={e => setHoldingForm({...holdingForm, symbol: e.target.value})} />
-              <Input label="股票名稱" placeholder="台積電" value={holdingForm.name} onChange={e => setHoldingForm({...holdingForm, name: e.target.value})} />
-          </div>
-           
-          <div className="grid grid-cols-2 gap-3">
-            <Input label="成交股數" type="number" placeholder="1000" value={holdingForm.shares} onChange={e => setHoldingForm({...holdingForm, shares: e.target.value})} />
-            <Input label="成交單價" type="number" placeholder="500" value={holdingForm.price} onChange={e => setHoldingForm({...holdingForm, price: e.target.value})} />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-              <Input label="手續費" type="number" placeholder="20" value={holdingForm.fee} onChange={e => setHoldingForm({...holdingForm, fee: e.target.value})} />
-              <div className="flex flex-col gap-1 justify-center">
-                 <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">預估總金額</span>
-                 <div className={`text-lg font-bold ${holdingForm.type === 'buy' ? 'text-red-600' : 'text-emerald-600'}`}>
-                    {formatNumber(calculateEstimate())}
-                 </div>
-              </div>
-          </div>
-
-          <Input label="備註" placeholder="例如：定期定額、波段..." value={holdingForm.note} onChange={e => setHoldingForm({...holdingForm, note: e.target.value})} />
-          <Button onClick={handleSaveHolding} className="w-full mt-2" variant={holdingForm.type === 'buy' ? 'buyActive' : 'sellActive'}><Save size={18} /> {editingHolding ? "儲存修改" : "確認新增"}</Button>
-        </div>
-      </Modal>
-    </div>
-  );
-}
+        // --- 啟動 React ---
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
