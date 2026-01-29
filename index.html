@@ -56,7 +56,7 @@
         import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
         import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid, Area, AreaChart } from 'recharts';
-        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2, Table, LayoutList } from 'lucide-react';
+        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2, Table, LayoutList, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
         // Firebase
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
@@ -180,6 +180,9 @@
 
           // View Mode (Updated: 'portfolio' or 'history')
           const [holdingViewMode, setHoldingViewMode] = useState('portfolio'); // 'portfolio' | 'history'
+          
+          // Sorting State for History View
+          const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
 
           // Update Logic States
           const [updatingPrices, setUpdatingPrices] = useState(false);
@@ -203,7 +206,7 @@
             type: "buy", // buy | sell
             shares: "",
             price: "",
-            fee: "20",
+            fee: "1", // 修改預設手續費為 1
             date: new Date().toISOString().split('T')[0],
             note: "",
             year: currentYear
@@ -288,9 +291,48 @@
               return yearMatch && hMonth === activeMonth;
             });
             
-            // Sort by date desc
+            // Default sort by date desc for logic processing
             return filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
           }, [allHoldings, activeYear, activeMonth, currentYear]);
+
+          // --- Sorted History for Display ---
+          const sortedHistory = useMemo(() => {
+            let sortableItems = [...holdings];
+            if (sortConfig.key !== null) {
+              sortableItems.sort((a, b) => {
+                let aValue, bValue;
+                
+                switch(sortConfig.key) {
+                    case 'memberId': 
+                        aValue = members.find(m => m.id === a.memberId)?.name || '';
+                        bValue = members.find(m => m.id === b.memberId)?.name || '';
+                        break;
+                    case 'total':
+                        aValue = Math.round(a.shares * a.price + (a.type === 'buy' ? 1 : -1) * (a.fee || 0));
+                        bValue = Math.round(b.shares * b.price + (b.type === 'buy' ? 1 : -1) * (b.fee || 0));
+                        break;
+                    case 'shares':
+                    case 'price':
+                    case 'fee':
+                        aValue = parseFloat(a[sortConfig.key] || 0);
+                        bValue = parseFloat(b[sortConfig.key] || 0);
+                        break;
+                    default: // date, type, symbol, name
+                        aValue = a[sortConfig.key];
+                        bValue = b[sortConfig.key];
+                }
+
+                if (aValue < bValue) {
+                  return sortConfig.direction === 'asc' ? -1 : 1;
+                }
+                if (aValue > bValue) {
+                  return sortConfig.direction === 'asc' ? 1 : -1;
+                }
+                return 0;
+              });
+            }
+            return sortableItems;
+          }, [holdings, sortConfig, members]);
 
           // --- Aggregated Data ---
           const aggregatedHoldings = useMemo(() => {
@@ -588,6 +630,22 @@
             }
             setUpdatingPrices(false);
           };
+
+          const handleSort = (key) => {
+            let direction = 'asc';
+            if (sortConfig.key === key && sortConfig.direction === 'asc') {
+              direction = 'desc';
+            }
+            setSortConfig({ key, direction });
+          };
+
+          // Helper to render sort icon
+          const SortIcon = ({ column }) => {
+              if (sortConfig.key !== column) return <ArrowUpDown size={14} className="ml-1 text-slate-300 inline opacity-50" />;
+              return sortConfig.direction === 'asc' 
+                  ? <ArrowUp size={14} className="ml-1 text-blue-500 inline" /> 
+                  : <ArrowDown size={14} className="ml-1 text-blue-500 inline" />;
+          }
 
           // --- Stats ---
           const totalMarketValue = aggregatedHoldings.reduce((sum, h) => sum + h.marketValue, 0);
@@ -977,21 +1035,21 @@
                          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
                             <div className="overflow-x-auto">
                                 <table className="w-full text-sm text-left">
-                                <thead className="bg-slate-50 text-slate-500 font-medium whitespace-nowrap">
+                                <thead className="bg-slate-50 text-slate-500 font-medium whitespace-nowrap cursor-pointer select-none">
                                     <tr>
-                                        <th className="p-3">日期</th>
-                                        <th className="p-3">類別</th>
-                                        <th className="p-3">標的</th>
-                                        <th className="p-3">成員</th>
-                                        <th className="p-3 text-right">股數</th>
-                                        <th className="p-3 text-right">單價</th>
-                                        <th className="p-3 text-right">手續費</th>
-                                        <th className="p-3 text-right">總金額</th>
+                                        <th className="p-3 hover:bg-slate-100 transition-colors" onClick={() => handleSort('date')}>日期 <SortIcon column="date"/></th>
+                                        <th className="p-3 hover:bg-slate-100 transition-colors" onClick={() => handleSort('type')}>類別 <SortIcon column="type"/></th>
+                                        <th className="p-3 hover:bg-slate-100 transition-colors" onClick={() => handleSort('symbol')}>標的 <SortIcon column="symbol"/></th>
+                                        <th className="p-3 hover:bg-slate-100 transition-colors" onClick={() => handleSort('memberId')}>成員 <SortIcon column="memberId"/></th>
+                                        <th className="p-3 text-right hover:bg-slate-100 transition-colors" onClick={() => handleSort('shares')}>股數 <SortIcon column="shares"/></th>
+                                        <th className="p-3 text-right hover:bg-slate-100 transition-colors" onClick={() => handleSort('price')}>單價 <SortIcon column="price"/></th>
+                                        <th className="p-3 text-right hover:bg-slate-100 transition-colors" onClick={() => handleSort('fee')}>手續費 <SortIcon column="fee"/></th>
+                                        <th className="p-3 text-right hover:bg-slate-100 transition-colors" onClick={() => handleSort('total')}>總金額 <SortIcon column="total"/></th>
                                         <th className="p-3 w-10"></th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
-                                    {holdings.map(h => (
+                                    {sortedHistory.map(h => (
                                         <tr key={h.id} className="hover:bg-slate-50 group">
                                             <td className="p-3 text-slate-500 whitespace-nowrap">{h.date}</td>
                                             <td className="p-3"><span className={`px-2 py-0.5 rounded text-xs font-bold ${h.type === 'buy' ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}`}>{h.type === 'buy' ? '買進' : '賣出'}</span></td>
@@ -1004,7 +1062,8 @@
                                                 {formatNumber(Math.round(h.shares * h.price + (h.type === 'buy' ? 1 : -1) * (h.fee || 0)))}
                                             </td>
                                             <td className="p-3 flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <button onClick={() => { setEditingHolding(h); setHoldingForm({...h, date: h.date, fee: h.fee || 20}); setIsAddHoldingOpen(true); }} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded"><Edit2 size={14}/></button>
+                                            {/* 編輯按鈕：若無手續費紀錄，預設值改為 1 */}
+                                            <button onClick={() => { setEditingHolding(h); setHoldingForm({...h, date: h.date, fee: h.fee || 1}); setIsAddHoldingOpen(true); }} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded"><Edit2 size={14}/></button>
                                             <button onClick={() => handleDeleteHolding(h.id)} className="p-1.5 text-red-500 hover:bg-red-50 rounded"><Trash2 size={14}/></button>
                                             </td>
                                         </tr>
