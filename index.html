@@ -535,15 +535,19 @@
           };
 
           const fetchStockData = async (code, currentName, onlyPrice = false) => {
+             // 修正：將代號強制轉為大寫，避免含英文字母的代號 (如 00632R, 2881B) 搜尋失敗
+             const cleanCode = code.toString().trim().toUpperCase();
+
              // 1. Yahoo Search Task (找中文名稱最快)
              const pYahooSearch = async () => {
                  if (onlyPrice) throw new Error("Skipped");
                  // 備用方案：如果標準搜尋失敗，嘗試使用 Yahoo Autocomplete API (往往更穩定)
                  try {
-                     const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${code}&lang=zh-Hant-TW&region=TW`;
+                     const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${cleanCode}&lang=zh-Hant-TW&region=TW`;
                      const data = await fetchWithRaceProxies(url);
                      if (data?.quotes?.length > 0) {
-                         const match = data.quotes.find(q => q.symbol === `${code}.TW` || q.symbol === `${code}.TWO`) || data.quotes[0];
+                         // 使用 cleanCode 進行比對
+                         const match = data.quotes.find(q => q.symbol === `${cleanCode}.TW` || q.symbol === `${cleanCode}.TWO`) || data.quotes[0];
                          const name = match?.shortname || match?.longname;
                          if (name && /[\u4e00-\u9fa5]/.test(name)) return { name };
                      }
@@ -554,11 +558,12 @@
 
              // 2. TWSE Task (找價格最準，也能找名稱)
              const pTwse = async () => {
-                 const query = `tse_${code}.tw|otc_${code}.tw`;
+                 // 使用 cleanCode 組建查詢字串
+                 const query = `tse_${cleanCode}.tw|otc_${cleanCode}.tw`;
                  const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
                  // 使用並行代理請求
                  const data = await fetchWithRaceProxies(url);
-                 const result = data?.msgArray?.find(item => item.c === code);
+                 const result = data?.msgArray?.find(item => item.c === cleanCode);
                  if (result) {
                     let p = parseFloat(result.z);
                     if (isNaN(p)) p = parseFloat(result.b?.split('_')[0]);
@@ -572,8 +577,6 @@
 
              try {
                  // 雙重競速：
-                 // 層次 1: Yahoo vs TWSE (資料源競速)
-                 // 層次 2: Corsproxy vs AllOrigins vs CodeTabs (網路層競速)
                  const result = await raceSuccess([pYahooSearch(), pTwse()]);
                  
                  return {
@@ -582,7 +585,7 @@
                      changePercent: result.changePercent
                  };
              } catch (e) {
-                 console.warn("All fetch sources failed for", code, e);
+                 console.warn("All fetch sources failed for", cleanCode, e);
                  return null;
              }
           };
@@ -591,19 +594,26 @@
              const sym = holdingForm.symbol;
              if (!sym || sym.trim() === '') return;
              
+             // UX 優化：搜尋時自動將使用者輸入轉為大寫並更新回表單
+             const cleanSym = sym.trim().toUpperCase();
+             if (cleanSym !== sym) {
+                 setHoldingForm(prev => ({ ...prev, symbol: cleanSym }));
+             }
+
              setLoadingStockInfo(true);
              try {
-                // Fetch Data 
-                const quote = await fetchStockData(sym, ""); 
+                // Fetch Data (使用大寫代號)
+                const quote = await fetchStockData(cleanSym, ""); 
                 
                 if (quote) {
                     setHoldingForm(prev => ({
                         ...prev,
+                        symbol: cleanSym, // 確保儲存的是大寫
                         name: quote.name || "", 
                     }));
                 } else {
                     // 如果真的全部都失敗，給予使用者提示
-                    alert("網路連線受阻，無法自動抓取名稱。\n\n請直接手動輸入股票名稱即可。");
+                    alert("網路連線受阻或代號錯誤，無法自動抓取。\n\n請檢查代號是否正確 (如 00632R)。");
                 }
              } catch (e) {
                 console.error("Auto-fill error", e);
