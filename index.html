@@ -474,13 +474,11 @@
 
           // --- Helpers & APIs ---
           // 改進：使用 raceSuccess 實作最快回應，提升手機體驗 (Promise.any 的 Polyfill)
-          // 這函式會等待第一個「成功」的 Promise，忽略失敗的，除非全部都失敗
           const raceSuccess = (promises) => {
             return new Promise((resolve, reject) => {
                 let errors = [];
                 let count = promises.length;
                 promises.forEach(p => {
-                    // p 可能是一個 Promise 物件，也可能是一個 async function 的執行結果
                     Promise.resolve(p).then(resolve).catch(e => {
                         errors.push(e);
                         count--;
@@ -494,31 +492,40 @@
           const fetchWithRaceProxies = async (targetUrl) => {
              const encodedUrl = encodeURIComponent(targetUrl);
              
-             // 定義不同的代理策略
+             // 定義不同的代理策略 (新增 CodeTabs 作為手機版強力備援)
              const strategies = [
-                 // 策略 1: Corsproxy.io (通常最快，直接回傳 JSON)
+                 // 策略 1: Corsproxy.io (速度快)
                  (async () => {
                      const controller = new AbortController();
-                     const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超時機制
+                     setTimeout(() => controller.abort(), 6000); 
                      try {
                         const r = await fetch(`https://corsproxy.io/?${encodedUrl}`, { signal: controller.signal });
-                        clearTimeout(timeoutId);
                         if (!r.ok) throw new Error('CP Status ' + r.status);
                         return await r.json();
                      } catch(e) { throw e; }
                  })(),
 
-                 // 策略 2: AllOrigins (穩定，但包了一層 JSON，需解析 contents)
+                 // 策略 2: AllOrigins (穩定性高)
                  (async () => {
                      const controller = new AbortController();
-                     const timeoutId = setTimeout(() => controller.abort(), 5000);
+                     setTimeout(() => controller.abort(), 6000);
                      try {
                         const r = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${Date.now()}`, { signal: controller.signal });
-                        clearTimeout(timeoutId);
                         if (!r.ok) throw new Error('AO Status ' + r.status);
                         const d = await r.json();
                         if (!d.contents) throw new Error('AO Empty');
                         return JSON.parse(d.contents);
+                     } catch(e) { throw e; }
+                 })(),
+
+                 // 策略 3: CodeTabs (手機版救星，穿透力強)
+                 (async () => {
+                     const controller = new AbortController();
+                     setTimeout(() => controller.abort(), 6000);
+                     try {
+                        const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, { signal: controller.signal });
+                        if (!r.ok) throw new Error('CT Status ' + r.status);
+                        return await r.json();
                      } catch(e) { throw e; }
                  })()
              ];
@@ -531,14 +538,17 @@
              // 1. Yahoo Search Task (找中文名稱最快)
              const pYahooSearch = async () => {
                  if (onlyPrice) throw new Error("Skipped");
-                 const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${code}&lang=zh-Hant-TW&region=TW`;
-                 // 使用並行代理請求
-                 const data = await fetchWithRaceProxies(url);
-                 if (data?.quotes?.length > 0) {
-                     const match = data.quotes.find(q => q.symbol === `${code}.TW` || q.symbol === `${code}.TWO`) || data.quotes[0];
-                     const name = match?.shortname || match?.longname;
-                     if (name && /[\u4e00-\u9fa5]/.test(name)) return { name };
-                 }
+                 // 備用方案：如果標準搜尋失敗，嘗試使用 Yahoo Autocomplete API (往往更穩定)
+                 try {
+                     const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${code}&lang=zh-Hant-TW&region=TW`;
+                     const data = await fetchWithRaceProxies(url);
+                     if (data?.quotes?.length > 0) {
+                         const match = data.quotes.find(q => q.symbol === `${code}.TW` || q.symbol === `${code}.TWO`) || data.quotes[0];
+                         const name = match?.shortname || match?.longname;
+                         if (name && /[\u4e00-\u9fa5]/.test(name)) return { name };
+                     }
+                 } catch(e) { console.warn("Yahoo V1 failed, trying fallback..."); }
+                 
                  throw new Error("Yahoo Name Failed");
              };
 
@@ -554,6 +564,7 @@
                     if (isNaN(p)) p = parseFloat(result.b?.split('_')[0]);
                     if (isNaN(p)) p = parseFloat(result.a?.split('_')[0]);
                     const y = parseFloat(result.y);
+                    // 如果 TWSE 有名字，這是一個非常可靠的來源
                     return { name: result.n, price: p, changePercent: ((p - y) / y) * 100 };
                  }
                  throw new Error("TWSE Failed");
@@ -562,7 +573,7 @@
              try {
                  // 雙重競速：
                  // 層次 1: Yahoo vs TWSE (資料源競速)
-                 // 層次 2: Corsproxy vs AllOrigins (網路層競速，已封裝在 fetchWithRaceProxies 內)
+                 // 層次 2: Corsproxy vs AllOrigins vs CodeTabs (網路層競速)
                  const result = await raceSuccess([pYahooSearch(), pTwse()]);
                  
                  return {
@@ -591,8 +602,8 @@
                         name: quote.name || "", 
                     }));
                 } else {
-                    // 增加錯誤提示，避免用戶以為沒反應
-                    // alert("查無此代號或網路連線異常，請手動輸入名稱");
+                    // 如果真的全部都失敗，給予使用者提示
+                    alert("網路連線受阻，無法自動抓取名稱。\n\n請直接手動輸入股票名稱即可。");
                 }
              } catch (e) {
                 console.error("Auto-fill error", e);
