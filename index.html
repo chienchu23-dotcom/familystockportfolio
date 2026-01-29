@@ -497,7 +497,7 @@
                  // 策略 1: Corsproxy.io (速度快)
                  (async () => {
                      const controller = new AbortController();
-                     setTimeout(() => controller.abort(), 6000); 
+                     setTimeout(() => controller.abort(), 8000); // 手機版延長至 8秒
                      try {
                         const r = await fetch(`https://corsproxy.io/?${encodedUrl}`, { signal: controller.signal });
                         if (!r.ok) throw new Error('CP Status ' + r.status);
@@ -508,7 +508,7 @@
                  // 策略 2: AllOrigins (穩定性高)
                  (async () => {
                      const controller = new AbortController();
-                     setTimeout(() => controller.abort(), 6000);
+                     setTimeout(() => controller.abort(), 8000);
                      try {
                         const r = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${Date.now()}`, { signal: controller.signal });
                         if (!r.ok) throw new Error('AO Status ' + r.status);
@@ -521,7 +521,7 @@
                  // 策略 3: CodeTabs (手機版救星，穿透力強)
                  (async () => {
                      const controller = new AbortController();
-                     setTimeout(() => controller.abort(), 6000);
+                     setTimeout(() => controller.abort(), 8000);
                      try {
                         const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, { signal: controller.signal });
                         if (!r.ok) throw new Error('CT Status ' + r.status);
@@ -541,17 +541,29 @@
              // 1. Yahoo Search Task (找中文名稱最快)
              const pYahooSearch = async () => {
                  if (onlyPrice) throw new Error("Skipped");
-                 // 備用方案：如果標準搜尋失敗，嘗試使用 Yahoo Autocomplete API (往往更穩定)
+                 
+                 // 方法 A: 標準搜尋 API
                  try {
                      const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${cleanCode}&lang=zh-Hant-TW&region=TW`;
                      const data = await fetchWithRaceProxies(url);
                      if (data?.quotes?.length > 0) {
-                         // 使用 cleanCode 進行比對
                          const match = data.quotes.find(q => q.symbol === `${cleanCode}.TW` || q.symbol === `${cleanCode}.TWO`) || data.quotes[0];
                          const name = match?.shortname || match?.longname;
                          if (name && /[\u4e00-\u9fa5]/.test(name)) return { name };
                      }
-                 } catch(e) { console.warn("Yahoo V1 failed, trying fallback..."); }
+                 } catch(e) { /* 方法 A 失敗，繼續嘗試方法 B */ }
+
+                 // 方法 B: Yahoo TW Autocomplete API (強力備援，解決手機版搜尋不到 00632R 等代號的問題)
+                 try {
+                     // 這是 Yahoo 股市網頁版使用的介面，非常穩定
+                     const autoUrl = `https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService.getSuggestions?searchQuery=${cleanCode}`;
+                     const autoData = await fetchWithRaceProxies(autoUrl);
+                     if (autoData?.result?.length > 0) {
+                         // 找到最接近的代號
+                         const match = autoData.result.find(q => q.symbol.includes(cleanCode)) || autoData.result[0];
+                         if (match && match.name) return { name: match.name };
+                     }
+                 } catch(e) { console.warn("Yahoo Fallback failed", e); }
                  
                  throw new Error("Yahoo Name Failed");
              };
