@@ -61,7 +61,8 @@
         // Firebase
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, writeBatch, getDoc, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+        // 增加 getDocs, query 引用以支援清空功能
+        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, writeBatch, getDoc, setDoc, getDocs, query } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
         // --- Firebase 設定 ---
         const firebaseConfig = {
@@ -862,6 +863,57 @@
             }
           };
 
+          // 新增：清空所有資料功能
+          const handleClearAllData = async () => {
+            // 第一道防線：警告視窗
+            if (!confirm("嚴重警告：這將會【永久刪除】所有交易紀錄與庫存資料！\n\n刪除後的資料無法復原，建議您先執行「匯出備份」。\n\n您確定要繼續嗎？")) return;
+            
+            // 第二道防線：強制輸入驗證
+            const check = prompt("為了防止誤刪，請輸入 'DELETE' (大寫) 以確認清空所有資料：");
+            if (check !== 'DELETE') {
+                alert("驗證碼輸入錯誤或取消，已中止清空作業。");
+                return;
+            }
+            
+            setIsImporting(true); // 重用 loading 狀態
+            try {
+                const q = query(collection(db, 'artifacts', appId, 'users', user.uid, 'holdings'));
+                const snapshot = await getDocs(q);
+                
+                if (snapshot.empty) {
+                    alert("目前沒有資料可刪除");
+                    return;
+                }
+
+                // 批次刪除
+                const chunkArray = (arr, size) => {
+                    const chunks = [];
+                    for (let i = 0; i < arr.length; i += size) {
+                        chunks.push(arr.slice(i, i + size));
+                    }
+                    return chunks;
+                };
+
+                const batches = chunkArray(snapshot.docs, 450);
+                let deletedCount = 0;
+
+                for (const chunk of batches) {
+                    const batch = writeBatch(db);
+                    chunk.forEach(d => batch.delete(d.ref));
+                    await batch.commit();
+                    deletedCount += chunk.length;
+                }
+                
+                alert(`已成功清除 ${deletedCount} 筆資料`);
+                setIsSettingsOpen(false);
+            } catch (e) {
+                console.error(e);
+                alert("刪除失敗：" + e.message);
+            } finally {
+                setIsImporting(false);
+            }
+          };
+
           // --- Render Components ---
           const renderMonthFilter = () => (
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
@@ -931,9 +983,11 @@
                                 <input type="password" placeholder="設定新 PIN 碼 (4位)" maxLength={4} value={newPin} onChange={e => setNewPin(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm w-full"/>
                                 <Button onClick={handleSetPin} className="whitespace-nowrap">設定鎖定</Button>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex gap-2 flex-wrap">
                                 <Button variant="secondary" onClick={handleExport}><Upload size={16}/> 匯出備份</Button>
                                 <Button variant="secondary" onClick={() => setIsImportOpen(true)}><RefreshCw size={16}/> 匯入資料</Button>
+                                <div className="w-px h-8 bg-slate-200 mx-1 hidden md:block"></div>
+                                <Button variant="danger" onClick={handleClearAllData} isLoading={isImporting}><Trash2 size={16}/> 清空資料</Button>
                             </div>
                         </div>
                     </div>
