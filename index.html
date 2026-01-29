@@ -488,11 +488,23 @@
             });
           };
 
-          // 封裝 fetch 邏輯
+          // 封裝 fetch 邏輯 (修復：恢復雙重代理機制，解決手機版單一代理失敗導致無反應的問題)
           const tryFetch = async (url) => {
-             const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
-             if (!response.ok) throw new Error('Fetch failed');
-             return await response.json();
+             // 1. Try Corsproxy.io (Fastest, but sometimes unstable)
+             try {
+                 const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
+                 if (response.ok) return await response.json();
+             } catch (e) { /* continue to backup */ }
+
+             // 2. Try AllOrigins (Backup, slower but reliable)
+             try {
+                 const timestamp = Date.now();
+                 const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}&t=${timestamp}`);
+                 const data = await response.json();
+                 if (data && data.contents) return JSON.parse(data.contents);
+             } catch (e) { /* continue */ }
+             
+             throw new Error('All proxies failed');
           };
 
           const fetchStockData = async (code, currentName, onlyPrice = false) => {
@@ -553,10 +565,11 @@
                 if (quote) {
                     setHoldingForm(prev => ({
                         ...prev,
-                        // 重點修復：直接使用抓到的名稱，不再 fallback 到 prev.name
-                        // 解決「換代號名稱不會換」的問題
                         name: quote.name || "", 
                     }));
+                } else {
+                    // 增加錯誤提示，避免用戶以為沒反應
+                    // alert("查無此代號或網路連線異常，請手動輸入名稱");
                 }
              } catch (e) {
                 console.error("Auto-fill error", e);
@@ -1214,15 +1227,25 @@
                   {/* Stock Symbol Input with Auto-fill */}
                   <div className="grid grid-cols-2 gap-3">
                       <div className="flex flex-col gap-1 relative">
-                         <Input 
-                            label="股票代號" 
-                            placeholder="例如：2330" 
-                            value={holdingForm.symbol} 
-                            onChange={e => setHoldingForm({...holdingForm, symbol: e.target.value})} 
-                            onBlur={handleSymbolBlur} 
-                            onKeyDown={(e) => e.key === 'Enter' && handleSymbolBlur()}
-                         />
-                         {loadingStockInfo && <div className="absolute right-3 top-8 text-slate-400 animate-spin"><Loader2 size={16}/></div>}
+                         <div className="relative">
+                             <Input 
+                                label="股票代號" 
+                                placeholder="例如：2330" 
+                                value={holdingForm.symbol} 
+                                onChange={e => setHoldingForm({...holdingForm, symbol: e.target.value})} 
+                                onBlur={handleSymbolBlur} 
+                                onKeyDown={(e) => e.key === 'Enter' && handleSymbolBlur()}
+                                className="pr-8" // 預留空間給按鈕
+                             />
+                             {/* 新增：手動搜尋按鈕 (放大鏡)，解決手機版 blur 不靈敏問題 */}
+                             <button 
+                                onClick={handleSymbolBlur}
+                                className="absolute right-2 top-8 text-slate-400 hover:text-blue-500 p-1"
+                                disabled={loadingStockInfo}
+                             >
+                                {loadingStockInfo ? <Loader2 size={18} className="animate-spin text-blue-500"/> : <Search size={18}/>}
+                             </button>
+                         </div>
                       </div>
                       <Input label="股票名稱" placeholder="台積電" value={holdingForm.name} onChange={e => setHoldingForm({...holdingForm, name: e.target.value})} />
                   </div>
