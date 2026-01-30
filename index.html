@@ -721,6 +721,45 @@
              };
           };
 
+          // 新增：批次抓取股價 (針對手機版優化，速度快且穩定)
+          const fetchBatchPrices = async (codes) => {
+              if (!codes || codes.length === 0) return {};
+              
+              // 組合代號：同時查詢 .TW (上市) 和 .TWO (上櫃)
+              const querySymbols = [];
+              codes.forEach(c => {
+                  const clean = c.toString().toUpperCase().trim();
+                  querySymbols.push(`${clean}.TW`);
+                  querySymbols.push(`${clean}.TWO`);
+              });
+
+              // Yahoo Finance Quote API (支援多代號)
+              const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${querySymbols.join(',')}&t=${Date.now()}`;
+              
+              try {
+                  // 使用 fetchStable 透過代理伺服器發送請求
+                  const data = await fetchStable(url);
+                  const updates = {};
+                  
+                  if (data?.quoteResponse?.result) {
+                      data.quoteResponse.result.forEach(item => {
+                          // 檢查是否有有效價格
+                          if (item.regularMarketPrice !== undefined && item.regularMarketPrice !== null) {
+                              const rawCode = item.symbol.split('.')[0]; // 移除 .TW/.TWO 後綴
+                              updates[rawCode] = {
+                                  price: item.regularMarketPrice,
+                                  changePercent: item.regularMarketChangePercent
+                              };
+                          }
+                      });
+                  }
+                  return updates;
+              } catch (e) {
+                  console.warn("Batch fetch failed", e);
+                  return {}; // 失敗回傳空物件，交由第二階段補救
+              }
+          };
+
           const handleSymbolBlur = async () => {
              const sym = holdingForm.symbol;
              if (!sym || sym.trim() === '') return;
@@ -758,43 +797,59 @@
             setPriceUpdateMsg("初始化...");
             
             const uniqueSymbols = [...new Set(allHoldings.map(h => h.symbol))];
-            // let updatedCount = 0; // 移除未使用的變數
-            const total = uniqueSymbols.length;
+            const updatesMap = {}; // 暫存所有成功的更新 { '2330': { price:..., change:... } }
             
-            // 修正：不再一開始就建立 batch，改為收集所有操作後再分批
-            const updates = []; // 暫存更新資料
+            // --- 階段一：批次極速更新 (Yahoo) ---
+            // 將代號切分成每組 10 個 (避免 URL 過長)
+            const BATCH_SIZE = 10;
+            const chunks = [];
+            for (let i = 0; i < uniqueSymbols.length; i += BATCH_SIZE) {
+                chunks.push(uniqueSymbols.slice(i, i + BATCH_SIZE));
+            }
 
-            // --- 穩定龜速更新策略 (Slow & Steady) ---
-            
-            for (let i = 0; i < total; i++) {
-                const code = uniqueSymbols[i];
-                setPriceUpdateMsg(`正在更新 [${code}] ... (${i+1}/${total})`);
+            for (let i = 0; i < chunks.length; i++) {
+                const chunk = chunks[i];
+                setPriceUpdateMsg(`正在批次更新第 ${i+1}/${chunks.length} 組...`);
                 
-                try {
-                    const existingName = allHoldings.find(h => h.symbol === code)?.name || '';
-                    // 執行單檔抓取 (onlyPrice=true)
-                    const data = await fetchStockData(code, existingName, true);
-                    
-                    if (data && data.price !== undefined && data.price !== null) {
-                        updates.push({ code, data });
-                        // updatedCount++;
-                    }
-                } catch (e) {
-                    console.warn(`Update failed for ${code}`, e);
-                }
+                // 嘗試批次抓取
+                const batchResults = await fetchBatchPrices(chunk);
+                Object.assign(updatesMap, batchResults);
+                
+                // 小休息，避免被判定為機器人
+                if (i < chunks.length - 1) await sleep(500);
+            }
 
-                // 關鍵：每更新完一檔，強制休息 2 秒
-                if (i < total - 1) {
-                    await sleep(2000); 
+            // --- 階段二：針對性補漏 (TWSE 逐一補救) ---
+            // 找出哪些股票在階段一沒抓到
+            const missingSymbols = uniqueSymbols.filter(s => !updatesMap[s]);
+            
+            if (missingSymbols.length > 0) {
+                setPriceUpdateMsg(`正在補救 ${missingSymbols.length} 檔資料...`);
+                
+                for (let i = 0; i < missingSymbols.length; i++) {
+                    const code = missingSymbols[i];
+                    // 顯示詳細進度
+                    setPriceUpdateMsg(`補救中: ${code} (${i+1}/${missingSymbols.length})`);
+                    
+                    try {
+                        const existingName = allHoldings.find(h => h.symbol === code)?.name || '';
+                        // 使用單檔強力抓取 (onlyPrice=true)
+                        const data = await fetchStockData(code, existingName, true);
+                        if (data && data.price !== null) {
+                            updatesMap[code] = data;
+                        }
+                    } catch (e) { console.warn("Retry failed", code); }
+                    
+                    // 補救模式需要休息久一點，確保成功率
+                    await sleep(1000);
                 }
             }
 
-            // 準備寫入資料
-            setPriceUpdateMsg("正在儲存資料...");
+            // --- 階段三：寫入資料庫 ---
+            setPriceUpdateMsg("正在儲存...");
             
-            // 1. 收集所有需要執行的更新操作
             const pendingOperations = [];
-            updates.forEach(({ code, data }) => {
+            Object.entries(updatesMap).forEach(([code, data]) => {
                 const holdingsToUpdate = allHoldings.filter(h => h.symbol === code);
                 holdingsToUpdate.forEach(h => {
                     const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id);
@@ -810,35 +865,31 @@
             });
 
             if (pendingOperations.length === 0) {
-                setPriceUpdateMsg("本次無資料更新");
+                setPriceUpdateMsg("本次無資料更新 (可能休市或網路異常)");
                 setUpdatingPrices(false);
                 return;
             }
 
-            // 2. 執行分批寫入 (解決資料量大時寫入失敗的問題)
-            // Firestore 限制單次 Batch 最多 500 筆操作，我們設定 450 筆為安全值
-            const BATCH_SIZE = 450;
-            const chunks = [];
-            for (let i = 0; i < pendingOperations.length; i += BATCH_SIZE) {
-                chunks.push(pendingOperations.slice(i, i + BATCH_SIZE));
-            }
-
+            // 分批寫入 Firestore (每次 450 筆)
+            const WRITE_BATCH_SIZE = 450;
             try {
                 let committedCount = 0;
-                for (const chunk of chunks) {
+                for (let i = 0; i < pendingOperations.length; i += WRITE_BATCH_SIZE) {
+                    const writeChunk = pendingOperations.slice(i, i + WRITE_BATCH_SIZE);
                     const batch = writeBatch(db);
-                    chunk.forEach(op => {
-                        batch.update(op.ref, op.data);
-                    });
+                    writeChunk.forEach(op => batch.update(op.ref, op.data));
                     await batch.commit();
-                    committedCount += chunk.length;
+                    committedCount += writeChunk.length;
                 }
 
                 setLastUpdateTime(new Date());
-                setPriceUpdateMsg(`更新完成：成功更新 ${updates.length} 檔股票`);
+                const successCount = Object.keys(updatesMap).length;
+                const totalCount = uniqueSymbols.length;
+                setPriceUpdateMsg(`更新完成：${successCount}/${totalCount} 檔成功`);
+                
             } catch (e) {
                 console.error("Batch write failed", e);
-                setPriceUpdateMsg("資料庫寫入失敗：" + e.message);
+                setPriceUpdateMsg("資料庫寫入失敗");
             }
             
             setUpdatingPrices(false);
