@@ -196,7 +196,7 @@
           const [updatingPrices, setUpdatingPrices] = useState(false);
           const [priceUpdateMsg, setPriceUpdateMsg] = useState("");
           const [lastUpdateTime, setLastUpdateTime] = useState(null);
-          const [isAutoUpdate, setIsAutoUpdate] = useState(false); // 新增：自動更新狀態
+          // 移除 isAutoUpdate 狀態
 
           // Modal States
           const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
@@ -241,23 +241,7 @@
             return () => unsubscribe();
           }, []);
 
-          // 新增：自動更新 Effect
-          useEffect(() => {
-              let intervalId;
-              if (isAutoUpdate) {
-                  // 立即執行一次
-                  if (!updatingPrices) {
-                      handleUpdatePrices();
-                  }
-                  // 設定每 60 秒執行一次
-                  intervalId = setInterval(() => {
-                      if (!updatingPrices) {
-                          handleUpdatePrices();
-                      }
-                  }, 60000);
-              }
-              return () => clearInterval(intervalId);
-          }, [isAutoUpdate]); // 依賴 isAutoUpdate，當它改變時啟動或停止計時器
+          // 移除自動更新的 useEffect
 
           // --- Security Check & Data Fetching ---
           useEffect(() => {
@@ -551,17 +535,17 @@
 
           // --- Helpers & APIs ---
           
-          // 輔助：延遲函數
+          // 輔助：延遲函數 (用於穩定更新)
           const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-          // 核心請求函數：改為「接力棒」模式 (Waterfall)，穩定性優於競速模式
-          // 依序嘗試代理伺服器，直到成功為止
-          const fetchWithFallback = async (targetUrl) => {
+          // 核心請求函數：穩定型 (Sequential Fallback)
+          // 放棄競速，改為一個接一個試，直到成功，確保最高成功率
+          const fetchStable = async (targetUrl) => {
              const encodedUrl = encodeURIComponent(targetUrl);
              
-             // 代理清單 (依穩定度排序)
-             const proxies = [
-                 // 1. AllOrigins (雖然慢但最穩定，不容易擋)
+             // 代理清單 (依穩定度排序，AllOrigins 雖然慢但最穩)
+             const strategies = [
+                 // 1. AllOrigins (解析 content)
                  async () => {
                      const r = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${Date.now()}`);
                      if (!r.ok) throw new Error('AO ' + r.status);
@@ -569,19 +553,19 @@
                      if (!d.contents) throw new Error('AO Empty');
                      return JSON.parse(d.contents);
                  },
-                 // 2. Corsproxy.io (速度快，偶爾會掛掉)
+                 // 2. Corsproxy.io (直接回傳)
                  async () => {
                      const r = await fetch(`https://corsproxy.io/?${encodedUrl}`);
                      if (!r.ok) throw new Error('CP ' + r.status);
                      return await r.json();
                  },
-                 // 3. CodeTabs (強力備援)
+                 // 3. CodeTabs
                  async () => {
                      const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`);
                      if (!r.ok) throw new Error('CT ' + r.status);
                      return await r.json();
                  },
-                 // 4. ThingProxy (最後防線)
+                 // 4. ThingProxy
                  async () => {
                      const r = await fetch(`https://thingproxy.freeboard.io/fetch/${targetUrl}`);
                      if (!r.ok) throw new Error('TP ' + r.status);
@@ -589,217 +573,143 @@
                  }
              ];
 
-             let lastError = null;
-             for (const strategy of proxies) {
+             for (const strategy of strategies) {
                  try {
-                     // 每個策略給予 10 秒超時限制
+                     // 給每個請求 15 秒寬限期
                      const controller = new AbortController();
-                     const timeoutId = setTimeout(() => controller.abort(), 10000);
+                     const timeoutId = setTimeout(() => controller.abort(), 15000);
                      
-                     // 執行請求
                      const result = await Promise.race([
                          strategy(),
-                         new Promise((_, reject) => {
-                             controller.signal.addEventListener('abort', () => reject(new Error("Timeout")));
-                         })
+                         new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(new Error("Timeout"))))
                      ]);
                      
                      clearTimeout(timeoutId);
-                     return result; // 成功就直接回傳，不繼續試
+                     return result; // 成功就回傳
                  } catch (e) {
-                     lastError = e;
-                     // 失敗了，休息一下再試下一個代理，避免瞬間發送太多請求被封鎖
-                     await sleep(200); 
+                     // 失敗就試下一個，中間休息 0.5 秒
+                     await sleep(500);
                      continue;
                  }
              }
-             throw lastError || new Error("All proxies failed");
+             throw new Error("All proxies failed");
           };
 
-          // 獲取單檔股票資料 (包含名稱與價格)
+          // 獲取單檔股票資料 (極致穩定版)
           const fetchStockData = async (code, currentName, onlyPrice = false) => {
              const cleanCode = code.toString().trim().toUpperCase();
-             // 判斷是否急需名稱 (當 currentName 為空時，表示是在做新股票搜尋)
              const needsName = !currentName || currentName.trim() === '';
 
-             // 任務 1: Yahoo Search (中文名稱專用)
-             const pYahooSearch = async () => {
-                 if (onlyPrice) throw new Error("Skipped");
-                 // 混合標準搜尋與 Autocomplete 兩種 API
-                 const url1 = `https://query1.finance.yahoo.com/v1/finance/search?q=${cleanCode}&lang=zh-Hant-TW&region=TW`;
-                 const url2 = `https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService.getSuggestions?searchQuery=${cleanCode}`;
-                 
-                 // 內部再競速
+             // 定義資料來源任務
+             
+             // 1. Yahoo TW Autocomplete (名稱最準，比較不會擋)
+             const tryYahooName = async () => {
+                 if (onlyPrice) return null;
                  try {
-                     const data = await fetchWithRaceProxies(url1); 
-                     if (data?.quotes?.length > 0) {
-                         const match = data.quotes.find(q => q.symbol === `${cleanCode}.TW` || q.symbol === `${cleanCode}.TWO`) || data.quotes[0];
-                         const name = match?.shortname || match?.longname;
-                         if (name && /[\u4e00-\u9fa5]/.test(name)) return { name };
-                     }
-                 } catch(e) {}
-
-                 try {
-                     const data = await fetchWithRaceProxies(url2); 
+                     const url = `https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService.getSuggestions?searchQuery=${cleanCode}`;
+                     const data = await fetchStable(url);
                      if (data?.result?.length > 0) {
                          const match = data.result.find(q => q.symbol.includes(cleanCode)) || data.result[0];
                          if (match?.name) return { name: match.name };
                      }
                  } catch(e) {}
-                 
-                 throw new Error("Yahoo Failed");
+                 return null;
              };
 
-             // 任務 2: Anue Search (鉅亨網 - 名稱穩定)
-             const pCnYesSearch = async () => {
-                 if (onlyPrice) throw new Error("Skipped");
+             // 2. TWSE (官方資料，含價格與名稱，穩定)
+             const tryTwse = async () => {
                  try {
-                     const url = `https://ess.api.cnyes.com/ess/api/v1/suggestion/keyword?q=${cleanCode}&limit=10`;
-                     const data = await fetchWithRaceProxies(url);
+                     const query = `tse_${cleanCode}.tw|otc_${cleanCode}.tw`;
+                     const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
+                     const data = await fetchStable(url);
+                     const result = data?.msgArray?.find(item => item.c === cleanCode);
+                     if (result) {
+                        let p = parseFloat(result.z);
+                        if (isNaN(p)) p = parseFloat(result.b?.split('_')[0]);
+                        if (isNaN(p)) p = parseFloat(result.a?.split('_')[0]);
+                        const y = parseFloat(result.y);
+                        if (!isNaN(p)) {
+                            return { name: result.n, price: p, changePercent: ((p - y) / y) * 100 };
+                        }
+                     }
+                 } catch(e) {}
+                 return null;
+             };
+
+             // 3. Yahoo Quote API (價格備援)
+             const tryYahooQuote = async () => {
+                 try {
+                     const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${cleanCode}.TW,${cleanCode}.TWO`;
+                     const data = await fetchStable(url);
+                     const res = data?.quoteResponse?.result?.[0];
+                     if (res) {
+                         return {
+                             name: res.longName || res.shortName, // 這裡也有名字
+                             price: res.regularMarketPrice,
+                             changePercent: res.regularMarketChangePercent
+                         };
+                     }
+                 } catch(e) {}
+                 return null;
+             };
+
+             // 4. CnYes (鉅亨網 - 名稱備援)
+             const tryCnYes = async () => {
+                 if (onlyPrice) return null;
+                 try {
+                     const url = `https://ess.api.cnyes.com/ess/api/v1/suggestion/keyword?q=${cleanCode}&limit=5`;
+                     const data = await fetchStable(url);
                      if (data?.data?.stores?.length > 0) {
-                         const match = data.data.stores.find(s => s.symbol === cleanCode || s.symbol.includes(cleanCode)) || data.data.stores[0];
+                         const match = data.data.stores.find(s => s.symbol === cleanCode) || data.data.stores[0];
                          if (match?.name) return { name: match.name };
                      }
                  } catch(e) {}
-                 throw new Error("CnYes Failed");
-             };
-
-             // 任務 3: TWSE (價格+名稱)
-             const pTwse = async () => {
-                 const query = `tse_${cleanCode}.tw|otc_${cleanCode}.tw`;
-                 const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
-                 const data = await fetchWithRaceProxies(url);
-                 const result = data?.msgArray?.find(item => item.c === cleanCode);
-                 if (result) {
-                    let p = parseFloat(result.z);
-                    if (isNaN(p)) p = parseFloat(result.b?.split('_')[0]);
-                    if (isNaN(p)) p = parseFloat(result.a?.split('_')[0]);
-                    const y = parseFloat(result.y);
-                    if (!isNaN(p)) {
-                        return { name: result.n, price: p, changePercent: ((p - y) / y) * 100 };
-                    }
-                 }
-                 throw new Error("TWSE Failed");
-             };
-
-             // 任務 4: Yahoo Chart (價格極快，但【無名稱】)
-             const pYahooChart = async () => {
-                 const symbol = `${cleanCode}.TW`; 
-                 const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d`;
-                 const data = await fetchWithRaceProxies(url);
-                 const result = data?.chart?.result?.[0];
-                 if (result?.meta) {
-                     const p = result.meta.regularMarketPrice;
-                     const prev = result.meta.chartPreviousClose;
-                     // 注意：這裡不回傳 name，因為 Chart API 的 name 通常是空的或英文
-                     return { price: p, changePercent: ((p - prev) / prev) * 100 };
-                 }
-                 throw new Error("Yahoo Chart Failed");
-             };
-
-             // 任務 5: Yahoo Quote (新增：價格+名稱，穩定性不錯)
-             const pYahooQuote = async () => {
-                 const symbol = `${cleanCode}.TW`;
-                 const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbol}`;
-                 const data = await fetchWithRaceProxies(url);
-                 const result = data?.quoteResponse?.result?.[0];
-                 if (result) {
-                     return { 
-                         name: result.longName || result.shortName,
-                         price: result.regularMarketPrice, 
-                         changePercent: result.regularMarketChangePercent 
-                     };
-                 }
-                 throw new Error("Yahoo Quote Failed");
-             }
-
-             try {
-                 const tasks = [];
-                 
-                 // 關鍵修正：情境分離
-                 if (needsName) {
-                     // 【搜尋情境】：絕對不能放入 pYahooChart，因為它會回傳空名稱並可能贏得競速
-                     tasks.push(pYahooSearch()); // 名稱專用
-                     tasks.push(pCnYesSearch()); // 名稱專用
-                     tasks.push(pTwse());        // 名稱+價格
-                     tasks.push(pYahooQuote());  // 名稱+價格
-                 } else {
-                     // 【更新情境】：速度優先，放入所有能查價格的來源
-                     tasks.push(pTwse());
-                     tasks.push(pYahooChart()); // 這個最快
-                     tasks.push(pYahooQuote());
-                 }
-
-                 const result = await raceSuccess(tasks);
-                 
-                 return {
-                     // 如果是搜尋模式，且贏家沒有回傳 name (理論上被過濾了，但做個防護)，就回傳 null 讓系統報錯
-                     name: result.name || currentName, 
-                     price: result.price, 
-                     changePercent: result.changePercent
-                 };
-             } catch (e) {
-                 console.warn("All fetch sources failed for", cleanCode);
                  return null;
+             };
+
+             // --- 執行邏輯：依序嘗試，直到滿意為止 ---
+             
+             let finalName = currentName;
+             let finalPrice = null;
+             let finalChange = null;
+
+             // 步驟 A: 如果需要價格 (或 TWSE 能同時給名與價)
+             // 優先試 TWSE (官方最準)
+             let data = await tryTwse();
+             
+             // 如果 TWSE 失敗，試 Yahoo Quote
+             if (!data || isNaN(data.price)) {
+                 await sleep(500); // 喘口氣
+                 data = await tryYahooQuote();
              }
-          };
 
-          // 批次抓取 (Yahoo 網頁版 API - 隱藏版，成功率極高)
-          const fetchBatchQuotes = async (symbols) => {
-              if (!symbols || symbols.length === 0) return {};
-              
-              // 嘗試加入 .TW 和 .TWO
-              const mixSymbols = [];
-              symbols.forEach(s => {
-                  mixSymbols.push(`${s}.TW`);
-                  mixSymbols.push(`${s}.TWO`);
-              });
+             if (data) {
+                 finalPrice = data.price;
+                 finalChange = data.changePercent;
+                 if (data.name) finalName = data.name;
+             }
 
-              // 使用 Yahoo 網頁版專用的 Quote API (比 query1 穩定)
-              const url = `https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.quote?symbols=${mixSymbols.join(',')}`;
-              
-              try {
-                  const data = await fetchWithFallback(url);
-                  const resultMap = {};
-                  // 解析 Yahoo 網頁版 API 結構
-                  if (data && Array.isArray(data)) { // 有時候回傳陣列
-                      data.forEach(item => processItem(item, resultMap));
-                  } else if (data && data.data) { // 有時候包在 data 裡
-                      // 結構可能不同，視 Proxy 解析而定，這裡做通用處理
-                      // 假設 data 本身是我們需要的
-                  }
-                  
-                  // Query1 API 備援 (如果上面網頁版失敗，結構不同)
-                  if (Object.keys(resultMap).length === 0) {
-                      const url2 = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${mixSymbols.join(',')}`;
-                      const data2 = await fetchWithFallback(url2);
-                      if (data2?.quoteResponse?.result) {
-                          data2.quoteResponse.result.forEach(item => {
-                              const rawSymbol = item.symbol.split('.')[0];
-                              // 優先取用較新的資料
-                              resultMap[rawSymbol] = {
-                                  price: item.regularMarketPrice,
-                                  changePercent: item.regularMarketChangePercent
-                              };
-                          });
-                      }
-                  }
-                  
-                  return resultMap;
+             // 步驟 B: 如果還是沒有名字 (且需要名字)，專門去查名字
+             if (needsName && (!finalName || finalName === cleanCode)) {
+                 await sleep(500);
+                 const nameData = await tryYahooName();
+                 if (nameData?.name) {
+                     finalName = nameData.name;
+                 } else {
+                     await sleep(500);
+                     const cnYesData = await tryCnYes();
+                     if (cnYesData?.name) finalName = cnYesData.name;
+                 }
+             }
 
-                  function processItem(item, map) {
-                      if (!item.symbol) return;
-                      const raw = item.symbol.split('.')[0];
-                      map[raw] = {
-                          price: item.price?.raw || item.price,
-                          changePercent: item.changePercent?.raw || item.changePercent
-                      };
-                  }
+             // 如果完全沒抓到東西，回傳 null
+             if (finalPrice === null && (needsName && !finalName)) return null;
 
-              } catch (e) {
-                  console.warn("Batch fetch failed", e);
-                  return {};
-              }
+             return {
+                 name: finalName,
+                 price: finalPrice,
+                 changePercent: finalChange
+             };
           };
 
           const handleSymbolBlur = async () => {
@@ -813,6 +723,7 @@
 
              setLoadingStockInfo(true);
              try {
+                // 搜尋模式：需要名字
                 const quote = await fetchStockData(cleanSym, ""); 
                 
                 if (quote && quote.name) {
@@ -820,9 +731,10 @@
                         ...prev,
                         symbol: cleanSym,
                         name: quote.name, 
+                        // 不覆蓋價格，除非是新的
                     }));
                 } else {
-                    alert("目前網路連線較壅塞，無法自動抓取名稱。\n\n請手動輸入名稱 (如：台積電) 即可。");
+                    alert("目前無法自動抓取名稱 (網路連線可能受阻)。\n\n請直接手動輸入名稱即可。");
                 }
              } catch (e) {
                 console.error("Auto-fill error", e);
@@ -834,61 +746,45 @@
           const handleUpdatePrices = async () => {
             if (!user || allHoldings.length === 0) return;
             setUpdatingPrices(true);
-            setPriceUpdateMsg("準備更新...");
+            setPriceUpdateMsg("初始化...");
             
             const uniqueSymbols = [...new Set(allHoldings.map(h => h.symbol))];
             let updatedCount = 0;
+            const total = uniqueSymbols.length;
             const batch = writeBatch(db);
-            
-            // --- 穩定型批次更新策略 ---
-            
-            // 1. 將股票切成小批次 (每批 5 個)，避免請求過大
-            const chunkArray = (arr, size) => {
-                const chunks = [];
-                for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
-                return chunks;
-            };
+            const updates = []; // 暫存更新資料
 
-            const chunks = chunkArray(uniqueSymbols, 5); // 極保守設定：一次 5 檔
-            const updatesMap = {};
-
-            for (let i = 0; i < chunks.length; i++) {
-                const chunk = chunks[i];
-                setPriceUpdateMsg(`正在更新第 ${i + 1}/${chunks.length} 組股價...`);
+            // --- 穩定龜速更新策略 (Slow & Steady) ---
+            // 放棄任何並行處理，完全序列化，確保成功率
+            
+            for (let i = 0; i < total; i++) {
+                const code = uniqueSymbols[i];
+                setPriceUpdateMsg(`正在更新 [${code}] ... (${i+1}/${total})`);
                 
-                // 執行批次查詢
-                const results = await fetchBatchQuotes(chunk);
-                
-                // 將結果存入 Map
-                Object.entries(results).forEach(([sym, data]) => {
-                    if (data && data.price) {
-                        updatesMap[sym] = data;
+                try {
+                    const existingName = allHoldings.find(h => h.symbol === code)?.name || '';
+                    // 執行單檔抓取 (onlyPrice=true)
+                    const data = await fetchStockData(code, existingName, true);
+                    
+                    if (data && data.price !== undefined && data.price !== null) {
+                        updates.push({ code, data });
+                        updatedCount++;
                     }
-                });
+                } catch (e) {
+                    console.warn(`Update failed for ${code}`, e);
+                }
 
-                // 強制休息 1.5 秒，避免被 Proxy 封鎖 (這是解決一直失敗的關鍵)
-                if (i < chunks.length - 1) {
-                    await sleep(1500);
+                // 關鍵：每更新完一檔，強制休息 2 秒
+                // 這是避免被封鎖的最有效方法
+                if (i < total - 1) {
+                    await sleep(2000); 
                 }
             }
 
-            // 針對沒抓到的漏網之魚，嘗試用 TWSE 個別補救 (一次一檔)
-            const missing = uniqueSymbols.filter(s => !updatesMap[s]);
-            if (missing.length > 0) {
-                setPriceUpdateMsg(`正在補救 ${missing.length} 檔資料...`);
-                for (const code of missing) {
-                    await sleep(1000); // 補救時休息更久
-                    const data = await fetchStockData(code, '', true);
-                    if (data && data.price) {
-                        updatesMap[code] = data;
-                    }
-                }
-            }
-
-            // 寫入資料庫
-            let successCount = 0;
-            Object.entries(updatesMap).forEach(([symbol, data]) => {
-                const holdingsToUpdate = allHoldings.filter(h => h.symbol === symbol);
+            // 統一寫入
+            setPriceUpdateMsg("正在儲存資料...");
+            updates.forEach(({ code, data }) => {
+                const holdingsToUpdate = allHoldings.filter(h => h.symbol === code);
                 holdingsToUpdate.forEach(h => {
                     const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id);
                     batch.update(ref, {
@@ -897,20 +793,18 @@
                         priceUpdateTime: new Date()
                     });
                 });
-                successCount++;
             });
             
             try {
-                if (successCount > 0) {
+                if (updatedCount > 0) {
                     await batch.commit();
                     setLastUpdateTime(new Date());
-                    setPriceUpdateMsg(`更新完成：成功 ${successCount} / 總數 ${uniqueSymbols.length}`);
+                    setPriceUpdateMsg(`更新完成：成功 ${updatedCount} / 總數 ${total}`);
                 } else {
-                    setPriceUpdateMsg("本次更新無資料變動");
+                    setPriceUpdateMsg("本次無資料更新");
                 }
             } catch (e) {
-                console.error("Batch commit failed", e);
-                setPriceUpdateMsg("寫入失敗，請稍後再試");
+                setPriceUpdateMsg("資料庫寫入失敗");
             }
             
             setUpdatingPrices(false);
@@ -1340,21 +1234,9 @@
                           <div className="flex justify-between items-center flex-wrap gap-2">
                              <h2 className="font-bold text-slate-800">資產分佈</h2>
                              <div className="flex items-center gap-2">
-                                 {/* 自動更新開關 */}
-                                 <button 
-                                    onClick={() => setIsAutoUpdate(!isAutoUpdate)}
-                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
-                                        isAutoUpdate 
-                                        ? 'bg-green-100 text-green-700 border border-green-200' 
-                                        : 'bg-slate-100 text-slate-500 border border-slate-200'
-                                    }`}
-                                 >
-                                    <div className={`w-2 h-2 rounded-full ${isAutoUpdate ? 'bg-green-500 animate-pulse' : 'bg-slate-400'}`}></div>
-                                    {isAutoUpdate ? '自動更新中 (60s)' : '自動更新：關'}
-                                 </button>
-
+                                 {/* 移除了自動更新按鈕 */}
                                  <Button variant="ghost" onClick={handleUpdatePrices} isLoading={updatingPrices} className="text-xs h-8">
-                                    <RefreshCw size={14} className="mr-1"/> 立即更新
+                                    <RefreshCw size={14} className="mr-1"/> 更新股價
                                  </Button>
                              </div>
                              {priceUpdateMsg && <div className={`text-xs text-center flex items-center justify-center gap-1 w-full md:w-auto ${priceUpdateMsg.includes('失敗') ? 'text-red-500' : 'text-emerald-600'}`}><AlertCircle size={12} /> {priceUpdateMsg}</div>}
