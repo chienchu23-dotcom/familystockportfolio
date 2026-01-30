@@ -736,6 +736,34 @@
              }
           };
 
+          // 新增：批次抓取股價 (大幅降低請求數，解決更新失敗問題)
+          const fetchBatchQuotes = async (symbols, suffix = '.TW') => {
+              if (!symbols || symbols.length === 0) return {};
+              
+              // 組合代號參數：2330.TW,0050.TW...
+              const symbolStr = symbols.map(s => `${s}${suffix}`).join(',');
+              const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbolStr}`;
+              
+              try {
+                  const data = await fetchWithRaceProxies(url);
+                  const resultMap = {};
+                  if (data?.quoteResponse?.result) {
+                      data.quoteResponse.result.forEach(item => {
+                          // 移除後綴 (.TW, .TWO) 以便對應回原始代號
+                          const rawSymbol = item.symbol.replace(suffix, '');
+                          resultMap[rawSymbol] = {
+                              price: item.regularMarketPrice,
+                              changePercent: item.regularMarketChangePercent
+                          };
+                      });
+                  }
+                  return resultMap;
+              } catch (e) {
+                  console.warn(`Batch fetch failed for ${suffix}`, e);
+                  return {};
+              }
+          };
+
           const handleSymbolBlur = async () => {
              const sym = holdingForm.symbol;
              if (!sym || sym.trim() === '') return;
@@ -776,79 +804,90 @@
             const uniqueSymbols = [...new Set(allHoldings.map(h => h.symbol))];
             let updatedCount = 0;
             const batch = writeBatch(db);
-            const failures = []; // 記錄失敗的代號
             
-            // 第一輪：並行處理 (Concurrency)，每次處理 3 檔
-            const CONCURRENCY = 3;
-            const chunks = [];
-            for (let i = 0; i < uniqueSymbols.length; i += CONCURRENCY) {
-                chunks.push(uniqueSymbols.slice(i, i + CONCURRENCY));
-            }
+            // --- 全新批次更新策略 (Batch Strategy) ---
+            
+            // 1. 準備清單
+            let remainingSymbols = [...uniqueSymbols];
+            const updatesMap = {}; // 暫存更新資料 { '2330': { price: 500, ... } }
 
+            // 2. 第一波：嘗試上市股 (.TW) 批次查詢
+            // 將代號切分成小批次 (例如每批 10 個)，避免 URL 過長
+            const chunkArray = (arr, size) => {
+                const chunks = [];
+                for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+                return chunks;
+            };
+
+            const chunks = chunkArray(remainingSymbols, 10);
+            
             for (const chunk of chunks) {
-                const promises = chunk.map(async (code) => {
-                    const existingName = allHoldings.find(h => h.symbol === code)?.name || '';
-                    const data = await fetchStockData(code, existingName, true);
-                    return { code, data };
-                });
-
-                const results = await Promise.all(promises);
-
-                results.forEach(({ code, data }) => {
-                    if (data && data.price !== undefined && data.price !== null) {
-                        const holdingsToUpdate = allHoldings.filter(h => h.symbol === code);
-                        holdingsToUpdate.forEach(h => {
-                            const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id);
-                            batch.update(ref, {
-                                currentPrice: data.price,
-                                dailyChangePercent: data.changePercent,
-                                priceUpdateTime: new Date()
-                            });
-                        });
-                        updatedCount++;
-                    } else {
-                        failures.push(code); // 加入失敗清單
-                    }
+                const results = await fetchBatchQuotes(chunk, '.TW');
+                Object.entries(results).forEach(([sym, data]) => {
+                    updatesMap[sym] = data;
+                    // 從待處理清單中移除
+                    const idx = remainingSymbols.indexOf(sym);
+                    if (idx > -1) remainingSymbols.splice(idx, 1);
                 });
             }
 
-            // 第二輪：自動重試失敗的項目 (降速：一次一檔，增加成功率)
-            if (failures.length > 0) {
-                setPriceUpdateMsg(`第一輪完成，正在重試 ${failures.length} 筆失敗項目...`);
-                for (const code of failures) {
-                    // 暫停 500ms 避免太快被擋
-                    await new Promise(r => setTimeout(r, 500)); 
-                    
-                    const existingName = allHoldings.find(h => h.symbol === code)?.name || '';
-                    const data = await fetchStockData(code, existingName, true);
-                    
-                    if (data && data.price !== undefined && data.price !== null) {
-                        const holdingsToUpdate = allHoldings.filter(h => h.symbol === code);
-                        holdingsToUpdate.forEach(h => {
-                            const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id);
-                            batch.update(ref, {
-                                currentPrice: data.price,
-                                dailyChangePercent: data.changePercent,
-                                priceUpdateTime: new Date()
-                            });
-                        });
-                        updatedCount++;
+            // 3. 第二波：嘗試上櫃股 (.TWO) 批次查詢 (針對第一波沒查到的)
+            if (remainingSymbols.length > 0) {
+                const twoChunks = chunkArray(remainingSymbols, 10);
+                for (const chunk of twoChunks) {
+                    const results = await fetchBatchQuotes(chunk, '.TWO');
+                    Object.entries(results).forEach(([sym, data]) => {
+                        updatesMap[sym] = data;
+                        const idx = remainingSymbols.indexOf(sym);
+                        if (idx > -1) remainingSymbols.splice(idx, 1);
+                    });
+                }
+            }
+
+            // 4. 第三波：個別查價 (針對還剩下的頑固份子，使用 TWSE/Anue 等備援)
+            if (remainingSymbols.length > 0) {
+                setPriceUpdateMsg(`正在處理剩餘 ${remainingSymbols.length} 檔特殊股票...`);
+                for (const code of remainingSymbols) {
+                    // 慢速個別查
+                    await new Promise(r => setTimeout(r, 200)); 
+                    const data = await fetchStockData(code, '', true); // onlyPrice=true
+                    if (data && data.price) {
+                        updatesMap[code] = {
+                            price: data.price,
+                            changePercent: data.changePercent
+                        };
                     }
                 }
             }
+
+            // 5. 寫入資料庫
+            let successCount = 0;
+            Object.entries(updatesMap).forEach(([symbol, data]) => {
+                const holdingsToUpdate = allHoldings.filter(h => h.symbol === symbol);
+                holdingsToUpdate.forEach(h => {
+                    const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id);
+                    batch.update(ref, {
+                        currentPrice: data.price,
+                        dailyChangePercent: data.changePercent,
+                        priceUpdateTime: new Date()
+                    });
+                });
+                successCount++;
+            });
             
             try {
-                await batch.commit();
-                const total = uniqueSymbols.length;
-                if (updatedCount === total) {
-                    setPriceUpdateMsg(`全部 ${updatedCount} 檔股票更新成功！`);
+                if (successCount > 0) {
+                    await batch.commit();
+                    setLastUpdateTime(new Date());
+                    setPriceUpdateMsg(`更新完成：成功 ${successCount} / 總數 ${uniqueSymbols.length}`);
                 } else {
-                    setPriceUpdateMsg(`更新完成：成功 ${updatedCount} / 失敗 ${total - updatedCount}`);
+                    setPriceUpdateMsg("本次無資料更新 (可能市場未開盤或網路異常)");
                 }
-                setLastUpdateTime(new Date());
             } catch (e) {
-                setPriceUpdateMsg("部分更新失敗，請稍後再試");
+                console.error("Batch commit failed", e);
+                setPriceUpdateMsg("資料庫寫入失敗，請稍後再試");
             }
+            
             setUpdatingPrices(false);
           };
 
