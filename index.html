@@ -364,28 +364,38 @@
               if (tx.currentPrice) group.currentPrice = tx.currentPrice;
               if (tx.dailyChangePercent) group.dailyChangePercent = tx.dailyChangePercent;
 
-              const qty = parseInt(tx.shares);
-              const unitCost = parseInt(tx.price);
-              const fee = parseInt(tx.fee || 0);
+              // 修正重點：使用 parseFloat 保留小數點，解決成本計算誤差問題
+              const qty = parseFloat(tx.shares) || 0;
+              const unitCost = parseFloat(tx.price) || 0;
+              const fee = parseFloat(tx.fee) || 0;
 
               if (tx.type === 'buy') {
                 group.shares += qty;
+                // 成本 = (股數 * 單價) + 手續費
                 group.totalCost += (qty * unitCost + fee);
               } else {
-                // Sell logic: FIFO or Average Cost. Using Average Cost for simplicity in P&L
+                // Sell logic: Weighted Average Cost (加權平均成本法)
+                // 當賣出時，依照賣出的比例減少總成本
                 const avgCost = group.shares > 0 ? group.totalCost / group.shares : 0;
                 const sellQty = Math.abs(qty);
-                const revenue = sellQty * unitCost - fee;
-                const costBasis = sellQty * avgCost;
+                const revenue = sellQty * unitCost - fee; // 賣出收入 = (股數 * 單價) - 手續費
+                const costBasis = sellQty * avgCost;      // 賣出部分的成本
                 
                 group.realizedProfit += (revenue - costBasis);
                 group.shares -= sellQty;
                 group.totalCost -= costBasis;
+                
+                // 邊界處理：如果股數歸零或變負(極少見)，重置成本以防浮點數誤差殘留
+                if (group.shares <= 0) {
+                    group.shares = 0;
+                    group.totalCost = 0;
+                }
               }
               group.txCount++;
             });
 
             return Object.values(groups).map(g => {
+              // 防止除以零
               const avgCost = g.shares > 0 ? g.totalCost / g.shares : 0;
               const marketValue = g.shares * g.currentPrice;
               const unrealizedProfit = marketValue - g.totalCost;
@@ -492,88 +502,110 @@
           const fetchWithRaceProxies = async (targetUrl) => {
              const encodedUrl = encodeURIComponent(targetUrl);
              
-             // 定義不同的代理策略 (新增 CodeTabs 作為手機版強力備援)
+             // 定義不同的代理策略 (新增 ThingProxy 作為額外備援)
              const strategies = [
-                 // 策略 1: Corsproxy.io (速度快)
+                 // 1. Corsproxy.io (速度快)
                  (async () => {
                      const controller = new AbortController();
-                     setTimeout(() => controller.abort(), 8000); // 手機版延長至 8秒
+                     setTimeout(() => controller.abort(), 8000); 
                      try {
                         const r = await fetch(`https://corsproxy.io/?${encodedUrl}`, { signal: controller.signal });
-                        if (!r.ok) throw new Error('CP Status ' + r.status);
+                        if (!r.ok) throw new Error('CP ' + r.status);
                         return await r.json();
                      } catch(e) { throw e; }
                  })(),
 
-                 // 策略 2: AllOrigins (穩定性高)
+                 // 2. AllOrigins (穩定性高)
                  (async () => {
                      const controller = new AbortController();
                      setTimeout(() => controller.abort(), 8000);
                      try {
                         const r = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${Date.now()}`, { signal: controller.signal });
-                        if (!r.ok) throw new Error('AO Status ' + r.status);
+                        if (!r.ok) throw new Error('AO ' + r.status);
                         const d = await r.json();
                         if (!d.contents) throw new Error('AO Empty');
                         return JSON.parse(d.contents);
                      } catch(e) { throw e; }
                  })(),
 
-                 // 策略 3: CodeTabs (手機版救星，穿透力強)
+                 // 3. CodeTabs (穿透力強)
                  (async () => {
                      const controller = new AbortController();
                      setTimeout(() => controller.abort(), 8000);
                      try {
                         const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, { signal: controller.signal });
-                        if (!r.ok) throw new Error('CT Status ' + r.status);
+                        if (!r.ok) throw new Error('CT ' + r.status);
+                        return await r.json();
+                     } catch(e) { throw e; }
+                 })(),
+
+                 // 4. ThingProxy (新增：另一個免費代理)
+                 (async () => {
+                     const controller = new AbortController();
+                     setTimeout(() => controller.abort(), 8000);
+                     try {
+                        const r = await fetch(`https://thingproxy.freeboard.io/fetch/${targetUrl}`, { signal: controller.signal });
+                        if (!r.ok) throw new Error('TP ' + r.status);
                         return await r.json();
                      } catch(e) { throw e; }
                  })()
              ];
 
-             // 使用 raceSuccess 取得最快的一個成功結果
              return await raceSuccess(strategies);
           };
 
           const fetchStockData = async (code, currentName, onlyPrice = false) => {
-             // 修正：將代號強制轉為大寫，避免含英文字母的代號 (如 00632R, 2881B) 搜尋失敗
              const cleanCode = code.toString().trim().toUpperCase();
 
-             // 1. Yahoo Search Task (找中文名稱最快)
+             // 任務 1: Yahoo Search (中文名稱)
              const pYahooSearch = async () => {
                  if (onlyPrice) throw new Error("Skipped");
+                 // 混合標準搜尋與 Autocomplete 兩種 API
+                 const url1 = `https://query1.finance.yahoo.com/v1/finance/search?q=${cleanCode}&lang=zh-Hant-TW&region=TW`;
+                 const url2 = `https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService.getSuggestions?searchQuery=${cleanCode}`;
                  
-                 // 方法 A: 標準搜尋 API
+                 // 內部再競速：看哪個 Yahoo API 先回來
                  try {
-                     const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${cleanCode}&lang=zh-Hant-TW&region=TW`;
-                     const data = await fetchWithRaceProxies(url);
+                     // 嘗試 A: 標準 API
+                     const data = await fetchWithRaceProxies(url1); 
                      if (data?.quotes?.length > 0) {
                          const match = data.quotes.find(q => q.symbol === `${cleanCode}.TW` || q.symbol === `${cleanCode}.TWO`) || data.quotes[0];
                          const name = match?.shortname || match?.longname;
                          if (name && /[\u4e00-\u9fa5]/.test(name)) return { name };
                      }
-                 } catch(e) { /* 方法 A 失敗，繼續嘗試方法 B */ }
+                 } catch(e) {}
 
-                 // 方法 B: Yahoo TW Autocomplete API (強力備援，解決手機版搜尋不到 00632R 等代號的問題)
                  try {
-                     // 這是 Yahoo 股市網頁版使用的介面，非常穩定
-                     const autoUrl = `https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService.getSuggestions?searchQuery=${cleanCode}`;
-                     const autoData = await fetchWithRaceProxies(autoUrl);
-                     if (autoData?.result?.length > 0) {
-                         // 找到最接近的代號
-                         const match = autoData.result.find(q => q.symbol.includes(cleanCode)) || autoData.result[0];
-                         if (match && match.name) return { name: match.name };
+                     // 嘗試 B: 台灣版 Autocomplete
+                     const data = await fetchWithRaceProxies(url2); 
+                     if (data?.result?.length > 0) {
+                         const match = data.result.find(q => q.symbol.includes(cleanCode)) || data.result[0];
+                         if (match?.name) return { name: match.name };
                      }
-                 } catch(e) { console.warn("Yahoo Fallback failed", e); }
+                 } catch(e) {}
                  
-                 throw new Error("Yahoo Name Failed");
+                 throw new Error("Yahoo Failed");
              };
 
-             // 2. TWSE Task (找價格最準，也能找名稱)
+             // 任務 2: Anue Search (新增：鉅亨網搜尋 - 針對台股名稱非常穩定)
+             const pCnYesSearch = async () => {
+                 if (onlyPrice) throw new Error("Skipped");
+                 try {
+                     const url = `https://ess.api.cnyes.com/ess/api/v1/suggestion/keyword?q=${cleanCode}&limit=10`;
+                     const data = await fetchWithRaceProxies(url);
+                     if (data?.data?.stores?.length > 0) {
+                         // 尋找代號符合的項目
+                         const match = data.data.stores.find(s => s.symbol === cleanCode || s.symbol.includes(cleanCode)) || data.data.stores[0];
+                         if (match?.name) return { name: match.name };
+                     }
+                 } catch(e) {}
+                 throw new Error("CnYes Failed");
+             };
+
+             // 任務 3: TWSE (價格+名稱)
              const pTwse = async () => {
-                 // 使用 cleanCode 組建查詢字串
                  const query = `tse_${cleanCode}.tw|otc_${cleanCode}.tw`;
                  const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
-                 // 使用並行代理請求
                  const data = await fetchWithRaceProxies(url);
                  const result = data?.msgArray?.find(item => item.c === cleanCode);
                  if (result) {
@@ -581,15 +613,36 @@
                     if (isNaN(p)) p = parseFloat(result.b?.split('_')[0]);
                     if (isNaN(p)) p = parseFloat(result.a?.split('_')[0]);
                     const y = parseFloat(result.y);
-                    // 如果 TWSE 有名字，這是一個非常可靠的來源
-                    return { name: result.n, price: p, changePercent: ((p - y) / y) * 100 };
+                    if (!isNaN(p)) {
+                        return { name: result.n, price: p, changePercent: ((p - y) / y) * 100 };
+                    }
                  }
                  throw new Error("TWSE Failed");
              };
 
+             // 任務 4: Yahoo Chart (價格最強備援)
+             const pYahooChart = async () => {
+                 const symbol = `${cleanCode}.TW`; 
+                 const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d`;
+                 const data = await fetchWithRaceProxies(url);
+                 const result = data?.chart?.result?.[0];
+                 if (result?.meta) {
+                     const p = result.meta.regularMarketPrice;
+                     const prev = result.meta.chartPreviousClose;
+                     return { price: p, changePercent: ((p - prev) / prev) * 100 };
+                 }
+                 throw new Error("Yahoo Chart Failed");
+             };
+
              try {
-                 // 雙重競速：
-                 const result = await raceSuccess([pYahooSearch(), pTwse()]);
+                 // 關鍵：將所有可能的來源放入競速
+                 const tasks = [pTwse(), pYahooChart()]; // 價格來源
+                 if (!onlyPrice) {
+                     tasks.push(pYahooSearch());
+                     tasks.push(pCnYesSearch()); // 加入鉅亨網作為名稱備援
+                 }
+
+                 const result = await raceSuccess(tasks);
                  
                  return {
                      name: result.name || currentName, 
@@ -597,7 +650,7 @@
                      changePercent: result.changePercent
                  };
              } catch (e) {
-                 console.warn("All fetch sources failed for", cleanCode, e);
+                 console.warn("All fetch sources failed for", cleanCode);
                  return null;
              }
           };
@@ -643,8 +696,8 @@
             let updatedCount = 0;
             const batch = writeBatch(db);
             
-            // 優化：並行處理 (Concurrency)，每次處理 4 檔，減少等待時間
-            const CONCURRENCY = 4;
+            // 降低並發數至 3，確保穩定性
+            const CONCURRENCY = 3;
             const chunks = [];
             for (let i = 0; i < uniqueSymbols.length; i += CONCURRENCY) {
                 chunks.push(uniqueSymbols.slice(i, i + CONCURRENCY));
@@ -653,7 +706,7 @@
             for (const chunk of chunks) {
                 const promises = chunk.map(async (code) => {
                     const existingName = allHoldings.find(h => h.symbol === code)?.name || '';
-                    // 傳入 true 以跳過 Yahoo 名稱搜尋，只抓股價，大幅加速
+                    // onlyPrice = true，啟用極速價格更新模式
                     const data = await fetchStockData(code, existingName, true);
                     return { code, data };
                 });
@@ -661,7 +714,7 @@
                 const results = await Promise.all(promises);
 
                 results.forEach(({ code, data }) => {
-                    if (data && data.price) {
+                    if (data && data.price !== undefined && data.price !== null) {
                         const holdingsToUpdate = allHoldings.filter(h => h.symbol === code);
                         holdingsToUpdate.forEach(h => {
                             const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id);
@@ -681,7 +734,7 @@
                 setPriceUpdateMsg(`成功更新 ${updatedCount}/${uniqueSymbols.length} 檔股票`);
                 setLastUpdateTime(new Date());
             } catch (e) {
-                setPriceUpdateMsg("更新失敗，請稍後再試");
+                setPriceUpdateMsg("部分更新失敗，請稍後再試");
             }
             setUpdatingPrices(false);
           };
