@@ -636,12 +636,13 @@
              // 2. Yahoo Quote API (價格備援 & 名稱備援)
              const tryYahooQuote = async () => {
                  try {
-                     const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${cleanCode}.TW,${cleanCode}.TWO`;
+                     // 修正：加入 timestamp (t) 參數，強制避免快取，確保抓到最新股價
+                     const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${cleanCode}.TW,${cleanCode}.TWO&t=${Date.now()}`;
                      const data = await fetchStable(url);
                      const res = data?.quoteResponse?.result?.[0];
                      if (res) {
                          return {
-                             name: res.longName || res.shortName, // 這裡也有名字
+                             name: res.longName || res.shortName, 
                              price: res.regularMarketPrice,
                              changePercent: res.regularMarketChangePercent
                          };
@@ -1350,16 +1351,30 @@
                                      </div>
                                   </div>
                                   
-                                  {/* 簡化顯示：只顯示總成本、現值 (根據需求強調總成本跟總報酬率) */}
-                                  <div className="grid grid-cols-2 gap-4 py-3 border-t border-slate-50 mt-2">
+                                  {/* 修正：改為三欄式佈局，新增「現價」欄位 */}
+                                  <div className="grid grid-cols-3 gap-2 py-3 border-t border-slate-50 mt-2">
+                                     {/* 第一欄：成本與股數 */}
                                      <div>
-                                        <div className="text-[10px] text-slate-400 uppercase mb-0.5">總投入成本</div>
-                                        <div className="font-bold text-slate-700 text-base">{formatCurrency(h.totalCost)}</div>
-                                        <div className="text-xs text-slate-400">({formatNumber(h.shares)} 股)</div>
+                                        <div className="text-[10px] text-slate-400 uppercase mb-0.5">總成本/股數</div>
+                                        <div className="font-bold text-slate-700">{formatCurrency(h.totalCost)}</div>
+                                        <div className="text-xs text-slate-400">{formatNumber(h.shares)} 股</div>
                                      </div>
+                                     
+                                     {/* 第二欄：現價 (新增) */}
+                                     <div className="text-center border-l border-r border-slate-50">
+                                        <div className="text-[10px] text-slate-400 uppercase mb-0.5">現價</div>
+                                        <div className={`font-bold text-base ${h.dailyChangePercent >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                                            {h.currentPrice || '-'}
+                                        </div>
+                                        <div className="text-[10px] text-slate-400">
+                                            {h.dailyChangePercent ? `${h.dailyChangePercent > 0 ? '+' : ''}${h.dailyChangePercent.toFixed(1)}%` : '-'}
+                                        </div>
+                                     </div>
+
+                                     {/* 第三欄：市值與損益 */}
                                      <div className="text-right">
-                                        <div className="text-[10px] text-slate-400 uppercase mb-0.5">目前市值</div>
-                                        <div className="font-bold text-blue-600 text-base">{formatCurrency(h.marketValue)}</div>
+                                        <div className="text-[10px] text-slate-400 uppercase mb-0.5">市值/損益</div>
+                                        <div className="font-bold text-blue-600">{formatCurrency(h.marketValue)}</div>
                                         <div className={`text-xs font-medium ${h.unrealizedProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
                                            {h.unrealizedProfit >= 0 ? '+' : ''}{formatCurrency(h.unrealizedProfit)}
                                         </div>
