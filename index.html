@@ -12,7 +12,8 @@
         theme: {
           extend: {
             colors: {
-              slate: { 50: '#f8fafc', 100: '#f1f5f9', 200: '#e2e8f0', 300: '#cbd5e1', 400: '#94a3b8', 500: '#64748b', 600: '#475569', 700: '#334155', 800: '#1e293b', 900: '#0f172a' }
+              slate: { 50: '#f8fafc', 100: '#f1f5f9', 200: '#e2e8f0', 300: '#cbd5e1', 400: '#94a3b8', 500: '#64748b', 600: '#475569', 700: '#334155', 800: '#1e293b', 900: '#0f172a' },
+              cyan: { 400: '#22d3ee', 500: '#06b6d4', 600: '#0891b2' } // For trend chart
             }
           }
         }
@@ -94,7 +95,7 @@
                   <h3 className="font-bold text-lg text-slate-800">{title}</h3>
                   <button onClick={onClose} className="p-1 rounded-full hover:bg-slate-200 text-slate-500 transition-colors"><X size={20} /></button>
                 </div>
-                <div className="p-4 overflow-y-auto">{children}</div>
+                <div className="p-4 overflow-y-auto bg-white">{children}</div>
               </div>
             </div>
           );
@@ -155,6 +156,8 @@
         // --- 格式化工具 ---
         const formatCurrency = (value) => new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(value);
         const formatNumber = (value) => new Intl.NumberFormat('zh-TW').format(value);
+        // 新增：類似截圖的冷色調配色
+        const PIE_COLORS = ['#3b82f6', '#0ea5e9', '#22d3ee', '#14b8a6', '#10b981', '#a8a29e']; 
         const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1'];
 
         // --- 主程式 ---
@@ -187,6 +190,7 @@
 
           // Member Detail State
           const [selectedMember, setSelectedMember] = useState(null);
+          const [trendRange, setTrendRange] = useState('1Y'); // 1Y, 6M, 3M, 1M
 
           // Update Logic States
           const [updatingPrices, setUpdatingPrices] = useState(false);
@@ -485,13 +489,46 @@
             });
           }, [allHoldings, activeYear, members]);
 
-          // --- Member Specific Data (Pie Chart) ---
+          // --- Member Specific Data ---
+          // 1. Pie Data
           const memberPieData = useMemo(() => {
             if (!selectedMember) return [];
             return aggregatedHoldings
                 .filter(h => h.memberId === selectedMember.id && h.marketValue > 0)
-                .map(h => ({ name: h.name, value: h.marketValue }));
+                .sort((a, b) => b.marketValue - a.marketValue) // Descending
+                .map(h => ({ name: h.name, symbol: h.symbol, value: h.marketValue }));
           }, [aggregatedHoldings, selectedMember]);
+
+          // 2. Trend Data (Filtered by Range)
+          const memberTrendData = useMemo(() => {
+              if (!selectedMember) return [];
+              // Filter trendData for specific member
+              const rawData = trendData.map(d => ({
+                  name: d.name,
+                  value: d[selectedMember.id] || 0
+              }));
+
+              // Apply Range Filter (Simulation based on months)
+              // Current logic assumes trendData has 12 months. 
+              // We'll slice from the end backwards to simulate ranges.
+              const currentMonthIndex = new Date().getMonth() + 1; // 1-12 (approx)
+              // If analyzing past year, we have data for available months.
+              // Let's filter out future months that have 0 value if we want a clean line, 
+              // or just use slice logic.
+              
+              let sliceCount = 12;
+              if (trendRange === '1M') sliceCount = 2; // Show last 2 points for a line
+              if (trendRange === '3M') sliceCount = 3;
+              if (trendRange === '6M') sliceCount = 6;
+              if (trendRange === '1Y') sliceCount = 12;
+
+              // Get data up to current actual month if possible, or just non-zero?
+              // For simplicity, we just slice the array from the end of valid data
+              // Finding last non-zero month index could be better but let's stick to simple slice
+              return rawData.slice(Math.max(rawData.length - sliceCount, 0));
+          }, [trendData, selectedMember, trendRange]);
+
+          const memberTotalAssets = memberPieData.reduce((sum, item) => sum + item.value, 0);
 
           // --- Helpers & APIs ---
           // 改進：使用 raceSuccess 實作最快回應，提升手機體驗 (Promise.any 的 Polyfill)
@@ -1428,57 +1465,117 @@
                   </div>
               </Modal>
 
-              {/* Member Detail Modal */}
-              <Modal isOpen={!!selectedMember} onClose={() => setSelectedMember(null)} title={selectedMember ? `${selectedMember.name} 的資產詳情` : ""}>
+              {/* Member Detail Modal (Updated to match screenshots) */}
+              <Modal isOpen={!!selectedMember} onClose={() => setSelectedMember(null)} title={selectedMember ? selectedMember.name : ""}>
                 {selectedMember && (
-                    <div className="space-y-6">
-                        {/* Member Trend Chart */}
-                        <div className="h-64 w-full text-xs">
-                            <h4 className="font-bold text-slate-700 mb-2 flex items-center gap-2"><Activity size={16}/> 資產累積趨勢</h4>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={trendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                                    <defs><linearGradient id="colorMember" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3B82F6" stopOpacity={0.1}/><stop offset="95%" stopColor="#3B82F6" stopOpacity={0}/></linearGradient></defs>
-                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0"/>
-                                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748B'}} />
-                                    <YAxis hide domain={['auto', 'auto']} />
-                                    <RechartsTooltip formatter={(value) => formatCurrency(value)} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}/>
-                                    <Legend verticalAlign="top" height={36}/>
-                                    <Area 
-                                        type="monotone" 
-                                        dataKey={selectedMember.id} 
-                                        name="總市值"
-                                        stroke="#3B82F6" 
-                                        fill="url(#colorMember)" 
-                                        strokeWidth={2}
-                                    />
-                                </AreaChart>
-                            </ResponsiveContainer>
+                    <div className="space-y-8">
+                        {/* 1. Trend Chart Section */}
+                        <div className="bg-white rounded-xl">
+                            <h3 className="font-bold text-center text-slate-900 mb-4 text-lg">證券資產趨勢圖</h3>
+                            
+                            {/* Range Selector */}
+                            <div className="flex justify-center gap-2 mb-4">
+                                {['1M', '3M', '6M', '1Y'].map(range => (
+                                    <button 
+                                        key={range}
+                                        onClick={() => setTrendRange(range)}
+                                        className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+                                            trendRange === range 
+                                            ? 'bg-blue-500 text-white shadow-md' 
+                                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                        }`}
+                                    >
+                                        {{'1M':'1月', '3M':'3月', '6M':'6月', '1Y':'1年'}[range]}
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* Area Chart */}
+                            <div className="h-64 w-full text-xs">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <AreaChart data={memberTrendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                                        <defs>
+                                            <linearGradient id="colorTrend" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.8}/>
+                                                <stop offset="95%" stopColor="#22d3ee" stopOpacity={0.1}/>
+                                            </linearGradient>
+                                        </defs>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={true} horizontal={true} stroke="#f1f5f9" />
+                                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}} minTickGap={30} />
+                                        <YAxis 
+                                            hide={false} 
+                                            axisLine={false} 
+                                            tickLine={false} 
+                                            tick={{fill: '#94a3b8', fontSize: 10}} 
+                                            tickFormatter={(val) => `${(val/10000).toFixed(0)}W`}
+                                            width={35}
+                                        />
+                                        <RechartsTooltip 
+                                            formatter={(value) => formatCurrency(value)} 
+                                            contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                                            cursor={{ stroke: '#94a3b8', strokeWidth: 1 }}
+                                        />
+                                        <Area 
+                                            type="monotone" 
+                                            dataKey="value" 
+                                            stroke="#06b6d4" 
+                                            strokeWidth={2}
+                                            fill="url(#colorTrend)" 
+                                            activeDot={{ r: 6, strokeWidth: 0, fill: '#06b6d4' }}
+                                        />
+                                    </AreaChart>
+                                </ResponsiveContainer>
+                            </div>
                         </div>
 
-                        {/* Member Holdings Pie Chart */}
-                        <div className="h-64 w-full">
-                            <h4 className="font-bold text-slate-700 mb-2 flex items-center gap-2"><PieChartIcon size={16}/> 持股配置</h4>
-                            {memberPieData.length > 0 ? (
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <PieChart>
-                                        <Pie 
-                                            data={memberPieData} 
-                                            cx="50%" 
-                                            cy="50%" 
-                                            innerRadius={60} 
-                                            outerRadius={80} 
-                                            paddingAngle={5} 
-                                            dataKey="value"
-                                        >
-                                            {memberPieData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
-                                        </Pie>
-                                        <RechartsTooltip formatter={(value) => formatCurrency(value)} contentStyle={{borderRadius: '8px', border:'none'}}/>
-                                        <Legend verticalAlign="bottom" height={36} wrapperStyle={{fontSize: '12px'}}/>
-                                    </PieChart>
-                                </ResponsiveContainer>
-                            ) : (
-                                <div className="h-full flex items-center justify-center text-slate-400 text-sm">此成員目前無持股</div>
-                            )}
+                        {/* 2. Holdings Pie Chart Section */}
+                        <div>
+                            <h3 className="font-bold text-center text-slate-900 mb-6 text-lg">證券</h3>
+                            <div className="flex flex-col md:flex-row items-center gap-6">
+                                {/* Donut Chart */}
+                                <div className="relative w-48 h-48 flex-shrink-0">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <PieChart>
+                                            <Pie 
+                                                data={memberPieData} 
+                                                cx="50%" 
+                                                cy="50%" 
+                                                innerRadius={60} 
+                                                outerRadius={80} 
+                                                paddingAngle={2} 
+                                                dataKey="value"
+                                                stroke="none"
+                                            >
+                                                {memberPieData.map((entry, index) => <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />)}
+                                            </Pie>
+                                        </PieChart>
+                                    </ResponsiveContainer>
+                                    {/* Center Text */}
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                        <div className="text-slate-400 text-xs font-medium">TWD</div>
+                                        <div className="text-slate-800 font-bold text-lg">{formatNumber(memberTotalAssets)}</div>
+                                    </div>
+                                </div>
+
+                                {/* Legend List */}
+                                <div className="flex-1 w-full space-y-3">
+                                    {memberPieData.map((item, index) => (
+                                        <div key={index} className="flex items-center justify-between text-sm group">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }}></div>
+                                                <div className="flex flex-col">
+                                                    <span className="font-bold text-blue-600">{item.symbol}</span>
+                                                    <span className="text-slate-500 text-xs">{item.name}</span>
+                                                </div>
+                                            </div>
+                                            <div className="font-medium text-slate-700">
+                                                {((item.value / memberTotalAssets) * 100).toFixed(0)}%
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {memberPieData.length === 0 && <div className="text-center text-slate-400 py-4">無持股資料</div>}
+                                </div>
+                            </div>
                         </div>
                     </div>
                 )}
