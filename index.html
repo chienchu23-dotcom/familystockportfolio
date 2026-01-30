@@ -758,13 +758,13 @@
             setPriceUpdateMsg("初始化...");
             
             const uniqueSymbols = [...new Set(allHoldings.map(h => h.symbol))];
-            let updatedCount = 0;
+            // let updatedCount = 0; // 移除未使用的變數
             const total = uniqueSymbols.length;
-            const batch = writeBatch(db);
+            
+            // 修正：不再一開始就建立 batch，改為收集所有操作後再分批
             const updates = []; // 暫存更新資料
 
             // --- 穩定龜速更新策略 (Slow & Steady) ---
-            // 放棄任何並行處理，完全序列化，確保成功率
             
             for (let i = 0; i < total; i++) {
                 const code = uniqueSymbols[i];
@@ -777,43 +777,68 @@
                     
                     if (data && data.price !== undefined && data.price !== null) {
                         updates.push({ code, data });
-                        updatedCount++;
+                        // updatedCount++;
                     }
                 } catch (e) {
                     console.warn(`Update failed for ${code}`, e);
                 }
 
                 // 關鍵：每更新完一檔，強制休息 2 秒
-                // 這是避免被封鎖的最有效方法
                 if (i < total - 1) {
                     await sleep(2000); 
                 }
             }
 
-            // 統一寫入
+            // 準備寫入資料
             setPriceUpdateMsg("正在儲存資料...");
+            
+            // 1. 收集所有需要執行的更新操作
+            const pendingOperations = [];
             updates.forEach(({ code, data }) => {
                 const holdingsToUpdate = allHoldings.filter(h => h.symbol === code);
                 holdingsToUpdate.forEach(h => {
                     const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id);
-                    batch.update(ref, {
-                        currentPrice: data.price,
-                        dailyChangePercent: data.changePercent,
-                        priceUpdateTime: new Date()
+                    pendingOperations.push({
+                        ref: ref,
+                        data: {
+                            currentPrice: data.price,
+                            dailyChangePercent: data.changePercent,
+                            priceUpdateTime: new Date()
+                        }
                     });
                 });
             });
-            
+
+            if (pendingOperations.length === 0) {
+                setPriceUpdateMsg("本次無資料更新");
+                setUpdatingPrices(false);
+                return;
+            }
+
+            // 2. 執行分批寫入 (解決資料量大時寫入失敗的問題)
+            // Firestore 限制單次 Batch 最多 500 筆操作，我們設定 450 筆為安全值
+            const BATCH_SIZE = 450;
+            const chunks = [];
+            for (let i = 0; i < pendingOperations.length; i += BATCH_SIZE) {
+                chunks.push(pendingOperations.slice(i, i + BATCH_SIZE));
+            }
+
             try {
-                if (updatedCount > 0) {
+                let committedCount = 0;
+                for (const chunk of chunks) {
+                    const batch = writeBatch(db);
+                    chunk.forEach(op => {
+                        batch.update(op.ref, op.data);
+                    });
                     await batch.commit();
-                    setLastUpdateTime(new Date());
-                    setPriceUpdateMsg(`更新完成：成功 ${updatedCount} / 總數 ${total}`);
-                } else {
-                    setPriceUpdateMsg("本次無資料更新");
+                    committedCount += chunk.length;
                 }
+
+                setLastUpdateTime(new Date());
+                setPriceUpdateMsg(`更新完成：成功更新 ${updates.length} 檔股票`);
             } catch (e) {
-                setPriceUpdateMsg("資料庫寫入失敗");
+                console.error("Batch write failed", e);
+                setPriceUpdateMsg("資料庫寫入失敗：" + e.message);
             }
             
             setUpdatingPrices(false);
