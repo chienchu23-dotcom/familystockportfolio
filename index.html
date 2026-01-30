@@ -56,7 +56,7 @@
         import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
         import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid, Area, AreaChart } from 'recharts';
-        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2, Table, LayoutList, ArrowUp, ArrowDown, ArrowUpDown, Copy } from 'lucide-react';
+        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2, Table, LayoutList, ArrowUp, ArrowDown, ArrowUpDown, Copy, User } from 'lucide-react';
 
         // Firebase
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
@@ -79,8 +79,8 @@
         const appId = "github-web-version";
 
         // --- 元件定義 ---
-        const Card = ({ children, className = "" }) => (
-          <div className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${className}`}>
+        const Card = ({ children, className = "", onClick }) => (
+          <div onClick={onClick} className={`bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden ${className}`}>
             {children}
           </div>
         );
@@ -184,6 +184,9 @@
           
           // Sorting State for History View
           const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
+
+          // Member Detail State
+          const [selectedMember, setSelectedMember] = useState(null);
 
           // Update Logic States
           const [updatingPrices, setUpdatingPrices] = useState(false);
@@ -482,6 +485,14 @@
             });
           }, [allHoldings, activeYear, members]);
 
+          // --- Member Specific Data (Pie Chart) ---
+          const memberPieData = useMemo(() => {
+            if (!selectedMember) return [];
+            return aggregatedHoldings
+                .filter(h => h.memberId === selectedMember.id && h.marketValue > 0)
+                .map(h => ({ name: h.name, value: h.marketValue }));
+          }, [aggregatedHoldings, selectedMember]);
+
           // --- Helpers & APIs ---
           // 改進：使用 raceSuccess 實作最快回應，提升手機體驗 (Promise.any 的 Polyfill)
           const raceSuccess = (promises) => {
@@ -768,19 +779,9 @@
                 const mHoldings = aggregatedHoldings.filter(h => h.memberId === m.id);
                 const mv = mHoldings.reduce((s, h) => s + h.marketValue, 0);
                 const cost = mHoldings.reduce((s, h) => s + h.totalCost, 0);
-                stats[m.id] = { name: m.name, value: mv, cost: cost, profit: mv - cost };
+                stats[m.id] = { name: m.name, value: mv, cost: cost, profit: mv - cost, id: m.id }; // Ensure id is passed
             });
             return Object.values(stats);
-          }, [aggregatedHoldings, members]);
-
-          const pieData = useMemo(() => {
-            const data = {};
-            aggregatedHoldings.forEach(h => {
-                if (h.marketValue > 0) {
-                   data[h.name] = (data[h.name] || 0) + h.marketValue;
-                }
-            });
-            return Object.entries(data).map(([name, value]) => ({ name, value }));
           }, [aggregatedHoldings, members]);
 
           // --- Handlers ---
@@ -1144,9 +1145,9 @@
                 
                 {/* Tabs */}
                 <div className="flex bg-slate-100 p-1 rounded-xl w-full md:w-fit">
-                    {['overview', 'holdings', 'analysis'].map(tab => (
+                    {['overview', 'holdings'].map(tab => (
                         <button key={tab} onClick={() => setActiveTab(tab)} className={`flex-1 md:flex-none px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === tab ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
-                            {{overview: '總覽', holdings: '庫存', analysis: '分析'}[tab]}
+                            {{overview: '總覽', holdings: '庫存'}[tab]}
                         </button>
                     ))}
                 </div>
@@ -1214,7 +1215,11 @@
                           <h2 className="font-bold text-slate-800">成員概況</h2>
                           <div className="space-y-3">
                              {memberStats.map(m => (
-                                <Card key={m.id} className="p-4 flex flex-col gap-2">
+                                <Card 
+                                    key={m.id} 
+                                    className="p-4 flex flex-col gap-2 cursor-pointer hover:shadow-md hover:border-blue-300 transition-all"
+                                    onClick={() => setSelectedMember(m)}
+                                >
                                    <div className="flex justify-between items-center">
                                       <span className="font-bold text-slate-700">{m.name}</span>
                                       <span className="text-xs bg-slate-100 px-2 py-1 rounded-full text-slate-500">{((m.value/totalMarketValue)*100 || 0).toFixed(0)}%</span>
@@ -1355,35 +1360,6 @@
                    </div>
                 )}
                 
-                {activeTab === 'analysis' && (
-                    <div className="grid md:grid-cols-2 gap-6 animate-in fade-in duration-300">
-                        <Card className="p-6">
-                            <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2"><PieChartIcon size={20} className="text-blue-500"/> 資產配置</h3>
-                            <div className="h-64">
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <PieChart>
-                                        <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                                            {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
-                                        </Pie>
-                                        <RechartsTooltip formatter={(value) => formatCurrency(value)} contentStyle={{borderRadius: '8px', border:'none'}}/>
-                                        <Legend verticalAlign="bottom" height={36}/>
-                                    </PieChart>
-                                </ResponsiveContainer>
-                            </div>
-                        </Card>
-                        <Card className="p-6">
-                           <h3 className="font-bold text-slate-800 mb-4">投資金句</h3>
-                           <div className="bg-blue-50 p-4 rounded-xl text-blue-800 italic">
-                               "投資不是為了致富，而是為了避免貧窮。最好的投資就是投資自己。"
-                           </div>
-                           <div className="mt-4 space-y-2">
-                               <div className="flex justify-between text-sm"><span className="text-slate-500">已實現獲利</span><span className="font-bold text-slate-700">{formatCurrency(totalRealized)}</span></div>
-                               <div className="flex justify-between text-sm"><span className="text-slate-500">交易次數</span><span className="font-bold text-slate-700">{holdings.length} 次</span></div>
-                               <div className="flex justify-between text-sm"><span className="text-slate-500">最後更新</span><span className="font-bold text-slate-700">{lastUpdateTime ? lastUpdateTime.toLocaleString() : '無'}</span></div>
-                           </div>
-                        </Card>
-                    </div>
-                )}
               </main>
 
               {/* Modals */}
@@ -1450,6 +1426,62 @@
                           確認匯入 {csvPreview.length} 筆資料
                       </Button>
                   </div>
+              </Modal>
+
+              {/* Member Detail Modal */}
+              <Modal isOpen={!!selectedMember} onClose={() => setSelectedMember(null)} title={selectedMember ? `${selectedMember.name} 的資產詳情` : ""}>
+                {selectedMember && (
+                    <div className="space-y-6">
+                        {/* Member Trend Chart */}
+                        <div className="h-64 w-full text-xs">
+                            <h4 className="font-bold text-slate-700 mb-2 flex items-center gap-2"><Activity size={16}/> 資產累積趨勢</h4>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart data={trendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                                    <defs><linearGradient id="colorMember" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3B82F6" stopOpacity={0.1}/><stop offset="95%" stopColor="#3B82F6" stopOpacity={0}/></linearGradient></defs>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0"/>
+                                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748B'}} />
+                                    <YAxis hide domain={['auto', 'auto']} />
+                                    <RechartsTooltip formatter={(value) => formatCurrency(value)} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}/>
+                                    <Legend verticalAlign="top" height={36}/>
+                                    <Area 
+                                        type="monotone" 
+                                        dataKey={selectedMember.id} 
+                                        name="總市值"
+                                        stroke="#3B82F6" 
+                                        fill="url(#colorMember)" 
+                                        strokeWidth={2}
+                                    />
+                                </AreaChart>
+                            </ResponsiveContainer>
+                        </div>
+
+                        {/* Member Holdings Pie Chart */}
+                        <div className="h-64 w-full">
+                            <h4 className="font-bold text-slate-700 mb-2 flex items-center gap-2"><PieChartIcon size={16}/> 持股配置</h4>
+                            {memberPieData.length > 0 ? (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <PieChart>
+                                        <Pie 
+                                            data={memberPieData} 
+                                            cx="50%" 
+                                            cy="50%" 
+                                            innerRadius={60} 
+                                            outerRadius={80} 
+                                            paddingAngle={5} 
+                                            dataKey="value"
+                                        >
+                                            {memberPieData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                                        </Pie>
+                                        <RechartsTooltip formatter={(value) => formatCurrency(value)} contentStyle={{borderRadius: '8px', border:'none'}}/>
+                                        <Legend verticalAlign="bottom" height={36} wrapperStyle={{fontSize: '12px'}}/>
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            ) : (
+                                <div className="h-full flex items-center justify-center text-slate-400 text-sm">此成員目前無持股</div>
+                            )}
+                        </div>
+                    </div>
+                )}
               </Modal>
 
             </div>
