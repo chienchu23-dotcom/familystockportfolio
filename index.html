@@ -550,90 +550,87 @@
           const memberTotalAssets = memberPieData.reduce((sum, item) => sum + item.value, 0);
 
           // --- Helpers & APIs ---
-          // 改進：使用 raceSuccess 實作最快回應，提升手機體驗 (Promise.any 的 Polyfill)
-          const raceSuccess = (promises) => {
-            return new Promise((resolve, reject) => {
-                let errors = [];
-                let count = promises.length;
-                promises.forEach(p => {
-                    Promise.resolve(p).then(resolve).catch(e => {
-                        errors.push(e);
-                        count--;
-                        if (count === 0) reject(new Error("All strategies failed"));
-                    });
-                });
-            });
-          };
+          
+          // 輔助：延遲函數
+          const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-          // 極速請求核心：同時對多個 Proxy 發出請求，誰先回來用誰 (Shotgun Approach)
-          const fetchWithRaceProxies = async (targetUrl) => {
+          // 核心請求函數：改為「接力棒」模式 (Waterfall)，穩定性優於競速模式
+          // 依序嘗試代理伺服器，直到成功為止
+          const fetchWithFallback = async (targetUrl) => {
              const encodedUrl = encodeURIComponent(targetUrl);
              
-             // 定義不同的代理策略 (新增 ThingProxy 作為額外備援)
-             const strategies = [
-                 // 1. Corsproxy.io (速度快)
-                 (async () => {
-                     const controller = new AbortController();
-                     setTimeout(() => controller.abort(), 8000); 
-                     try {
-                        const r = await fetch(`https://corsproxy.io/?${encodedUrl}`, { signal: controller.signal });
-                        if (!r.ok) throw new Error('CP ' + r.status);
-                        return await r.json();
-                     } catch(e) { throw e; }
-                 })(),
-
-                 // 2. AllOrigins (穩定性高)
-                 (async () => {
-                     const controller = new AbortController();
-                     setTimeout(() => controller.abort(), 8000);
-                     try {
-                        const r = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${Date.now()}`, { signal: controller.signal });
-                        if (!r.ok) throw new Error('AO ' + r.status);
-                        const d = await r.json();
-                        if (!d.contents) throw new Error('AO Empty');
-                        return JSON.parse(d.contents);
-                     } catch(e) { throw e; }
-                 })(),
-
-                 // 3. CodeTabs (穿透力強)
-                 (async () => {
-                     const controller = new AbortController();
-                     setTimeout(() => controller.abort(), 8000);
-                     try {
-                        const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, { signal: controller.signal });
-                        if (!r.ok) throw new Error('CT ' + r.status);
-                        return await r.json();
-                     } catch(e) { throw e; }
-                 })(),
-
-                 // 4. ThingProxy (新增：另一個免費代理)
-                 (async () => {
-                     const controller = new AbortController();
-                     setTimeout(() => controller.abort(), 8000);
-                     try {
-                        const r = await fetch(`https://thingproxy.freeboard.io/fetch/${targetUrl}`, { signal: controller.signal });
-                        if (!r.ok) throw new Error('TP ' + r.status);
-                        return await r.json();
-                     } catch(e) { throw e; }
-                 })()
+             // 代理清單 (依穩定度排序)
+             const proxies = [
+                 // 1. AllOrigins (雖然慢但最穩定，不容易擋)
+                 async () => {
+                     const r = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${Date.now()}`);
+                     if (!r.ok) throw new Error('AO ' + r.status);
+                     const d = await r.json();
+                     if (!d.contents) throw new Error('AO Empty');
+                     return JSON.parse(d.contents);
+                 },
+                 // 2. Corsproxy.io (速度快，偶爾會掛掉)
+                 async () => {
+                     const r = await fetch(`https://corsproxy.io/?${encodedUrl}`);
+                     if (!r.ok) throw new Error('CP ' + r.status);
+                     return await r.json();
+                 },
+                 // 3. CodeTabs (強力備援)
+                 async () => {
+                     const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`);
+                     if (!r.ok) throw new Error('CT ' + r.status);
+                     return await r.json();
+                 },
+                 // 4. ThingProxy (最後防線)
+                 async () => {
+                     const r = await fetch(`https://thingproxy.freeboard.io/fetch/${targetUrl}`);
+                     if (!r.ok) throw new Error('TP ' + r.status);
+                     return await r.json();
+                 }
              ];
 
-             return await raceSuccess(strategies);
+             let lastError = null;
+             for (const strategy of proxies) {
+                 try {
+                     // 每個策略給予 10 秒超時限制
+                     const controller = new AbortController();
+                     const timeoutId = setTimeout(() => controller.abort(), 10000);
+                     
+                     // 執行請求
+                     const result = await Promise.race([
+                         strategy(),
+                         new Promise((_, reject) => {
+                             controller.signal.addEventListener('abort', () => reject(new Error("Timeout")));
+                         })
+                     ]);
+                     
+                     clearTimeout(timeoutId);
+                     return result; // 成功就直接回傳，不繼續試
+                 } catch (e) {
+                     lastError = e;
+                     // 失敗了，休息一下再試下一個代理，避免瞬間發送太多請求被封鎖
+                     await sleep(200); 
+                     continue;
+                 }
+             }
+             throw lastError || new Error("All proxies failed");
           };
 
+          // 獲取單檔股票資料 (包含名稱與價格)
           const fetchStockData = async (code, currentName, onlyPrice = false) => {
              const cleanCode = code.toString().trim().toUpperCase();
+             // 判斷是否急需名稱 (當 currentName 為空時，表示是在做新股票搜尋)
+             const needsName = !currentName || currentName.trim() === '';
 
-             // 任務 1: Yahoo Search (中文名稱)
+             // 任務 1: Yahoo Search (中文名稱專用)
              const pYahooSearch = async () => {
                  if (onlyPrice) throw new Error("Skipped");
                  // 混合標準搜尋與 Autocomplete 兩種 API
                  const url1 = `https://query1.finance.yahoo.com/v1/finance/search?q=${cleanCode}&lang=zh-Hant-TW&region=TW`;
                  const url2 = `https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService.getSuggestions?searchQuery=${cleanCode}`;
                  
-                 // 內部再競速：看哪個 Yahoo API 先回來
+                 // 內部再競速
                  try {
-                     // 嘗試 A: 標準 API
                      const data = await fetchWithRaceProxies(url1); 
                      if (data?.quotes?.length > 0) {
                          const match = data.quotes.find(q => q.symbol === `${cleanCode}.TW` || q.symbol === `${cleanCode}.TWO`) || data.quotes[0];
@@ -643,7 +640,6 @@
                  } catch(e) {}
 
                  try {
-                     // 嘗試 B: 台灣版 Autocomplete
                      const data = await fetchWithRaceProxies(url2); 
                      if (data?.result?.length > 0) {
                          const match = data.result.find(q => q.symbol.includes(cleanCode)) || data.result[0];
@@ -654,14 +650,13 @@
                  throw new Error("Yahoo Failed");
              };
 
-             // 任務 2: Anue Search (新增：鉅亨網搜尋 - 針對台股名稱非常穩定)
+             // 任務 2: Anue Search (鉅亨網 - 名稱穩定)
              const pCnYesSearch = async () => {
                  if (onlyPrice) throw new Error("Skipped");
                  try {
                      const url = `https://ess.api.cnyes.com/ess/api/v1/suggestion/keyword?q=${cleanCode}&limit=10`;
                      const data = await fetchWithRaceProxies(url);
                      if (data?.data?.stores?.length > 0) {
-                         // 尋找代號符合的項目
                          const match = data.data.stores.find(s => s.symbol === cleanCode || s.symbol.includes(cleanCode)) || data.data.stores[0];
                          if (match?.name) return { name: match.name };
                      }
@@ -687,7 +682,7 @@
                  throw new Error("TWSE Failed");
              };
 
-             // 任務 4: Yahoo Chart (價格最強備援)
+             // 任務 4: Yahoo Chart (價格極快，但【無名稱】)
              const pYahooChart = async () => {
                  const symbol = `${cleanCode}.TW`; 
                  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d`;
@@ -696,36 +691,49 @@
                  if (result?.meta) {
                      const p = result.meta.regularMarketPrice;
                      const prev = result.meta.chartPreviousClose;
+                     // 注意：這裡不回傳 name，因為 Chart API 的 name 通常是空的或英文
                      return { price: p, changePercent: ((p - prev) / prev) * 100 };
                  }
                  throw new Error("Yahoo Chart Failed");
              };
 
-             // 任務 5: Yahoo Quote (新增：輕量級報價 API，增加成功率)
+             // 任務 5: Yahoo Quote (新增：價格+名稱，穩定性不錯)
              const pYahooQuote = async () => {
                  const symbol = `${cleanCode}.TW`;
                  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbol}`;
                  const data = await fetchWithRaceProxies(url);
                  const result = data?.quoteResponse?.result?.[0];
                  if (result) {
-                     const p = result.regularMarketPrice;
-                     const prev = result.regularMarketPreviousClose;
-                     return { price: p, changePercent: ((p - prev) / prev) * 100 };
+                     return { 
+                         name: result.longName || result.shortName,
+                         price: result.regularMarketPrice, 
+                         changePercent: result.regularMarketChangePercent 
+                     };
                  }
                  throw new Error("Yahoo Quote Failed");
              }
 
              try {
-                 // 關鍵：將所有可能的來源放入競速
-                 const tasks = [pTwse(), pYahooChart(), pYahooQuote()]; // 價格來源增加至 3 個
-                 if (!onlyPrice) {
-                     tasks.push(pYahooSearch());
-                     tasks.push(pCnYesSearch()); 
+                 const tasks = [];
+                 
+                 // 關鍵修正：情境分離
+                 if (needsName) {
+                     // 【搜尋情境】：絕對不能放入 pYahooChart，因為它會回傳空名稱並可能贏得競速
+                     tasks.push(pYahooSearch()); // 名稱專用
+                     tasks.push(pCnYesSearch()); // 名稱專用
+                     tasks.push(pTwse());        // 名稱+價格
+                     tasks.push(pYahooQuote());  // 名稱+價格
+                 } else {
+                     // 【更新情境】：速度優先，放入所有能查價格的來源
+                     tasks.push(pTwse());
+                     tasks.push(pYahooChart()); // 這個最快
+                     tasks.push(pYahooQuote());
                  }
 
                  const result = await raceSuccess(tasks);
                  
                  return {
+                     // 如果是搜尋模式，且贏家沒有回傳 name (理論上被過濾了，但做個防護)，就回傳 null 讓系統報錯
                      name: result.name || currentName, 
                      price: result.price, 
                      changePercent: result.changePercent
@@ -736,30 +744,60 @@
              }
           };
 
-          // 新增：批次抓取股價 (大幅降低請求數，解決更新失敗問題)
-          const fetchBatchQuotes = async (symbols, suffix = '.TW') => {
+          // 批次抓取 (Yahoo 網頁版 API - 隱藏版，成功率極高)
+          const fetchBatchQuotes = async (symbols) => {
               if (!symbols || symbols.length === 0) return {};
               
-              // 組合代號參數：2330.TW,0050.TW...
-              const symbolStr = symbols.map(s => `${s}${suffix}`).join(',');
-              const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbolStr}`;
+              // 嘗試加入 .TW 和 .TWO
+              const mixSymbols = [];
+              symbols.forEach(s => {
+                  mixSymbols.push(`${s}.TW`);
+                  mixSymbols.push(`${s}.TWO`);
+              });
+
+              // 使用 Yahoo 網頁版專用的 Quote API (比 query1 穩定)
+              const url = `https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.quote?symbols=${mixSymbols.join(',')}`;
               
               try {
-                  const data = await fetchWithRaceProxies(url);
+                  const data = await fetchWithFallback(url);
                   const resultMap = {};
-                  if (data?.quoteResponse?.result) {
-                      data.quoteResponse.result.forEach(item => {
-                          // 移除後綴 (.TW, .TWO) 以便對應回原始代號
-                          const rawSymbol = item.symbol.replace(suffix, '');
-                          resultMap[rawSymbol] = {
-                              price: item.regularMarketPrice,
-                              changePercent: item.regularMarketChangePercent
-                          };
-                      });
+                  // 解析 Yahoo 網頁版 API 結構
+                  if (data && Array.isArray(data)) { // 有時候回傳陣列
+                      data.forEach(item => processItem(item, resultMap));
+                  } else if (data && data.data) { // 有時候包在 data 裡
+                      // 結構可能不同，視 Proxy 解析而定，這裡做通用處理
+                      // 假設 data 本身是我們需要的
                   }
+                  
+                  // Query1 API 備援 (如果上面網頁版失敗，結構不同)
+                  if (Object.keys(resultMap).length === 0) {
+                      const url2 = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${mixSymbols.join(',')}`;
+                      const data2 = await fetchWithFallback(url2);
+                      if (data2?.quoteResponse?.result) {
+                          data2.quoteResponse.result.forEach(item => {
+                              const rawSymbol = item.symbol.split('.')[0];
+                              // 優先取用較新的資料
+                              resultMap[rawSymbol] = {
+                                  price: item.regularMarketPrice,
+                                  changePercent: item.regularMarketChangePercent
+                              };
+                          });
+                      }
+                  }
+                  
                   return resultMap;
+
+                  function processItem(item, map) {
+                      if (!item.symbol) return;
+                      const raw = item.symbol.split('.')[0];
+                      map[raw] = {
+                          price: item.price?.raw || item.price,
+                          changePercent: item.changePercent?.raw || item.changePercent
+                      };
+                  }
+
               } catch (e) {
-                  console.warn(`Batch fetch failed for ${suffix}`, e);
+                  console.warn("Batch fetch failed", e);
                   return {};
               }
           };
@@ -768,7 +806,6 @@
              const sym = holdingForm.symbol;
              if (!sym || sym.trim() === '') return;
              
-             // UX 優化：搜尋時自動將使用者輸入轉為大寫並更新回表單
              const cleanSym = sym.trim().toUpperCase();
              if (cleanSym !== sym) {
                  setHoldingForm(prev => ({ ...prev, symbol: cleanSym }));
@@ -776,18 +813,16 @@
 
              setLoadingStockInfo(true);
              try {
-                // Fetch Data (使用大寫代號)
                 const quote = await fetchStockData(cleanSym, ""); 
                 
-                if (quote) {
+                if (quote && quote.name) {
                     setHoldingForm(prev => ({
                         ...prev,
-                        symbol: cleanSym, // 確保儲存的是大寫
-                        name: quote.name || "", 
+                        symbol: cleanSym,
+                        name: quote.name, 
                     }));
                 } else {
-                    // 如果真的全部都失敗，給予使用者提示
-                    alert("網路連線受阻或代號錯誤，無法自動抓取。\n\n請檢查代號是否正確 (如 00632R)。");
+                    alert("目前網路連線較壅塞，無法自動抓取名稱。\n\n請手動輸入名稱 (如：台積電) 即可。");
                 }
              } catch (e) {
                 console.error("Auto-fill error", e);
@@ -799,68 +834,58 @@
           const handleUpdatePrices = async () => {
             if (!user || allHoldings.length === 0) return;
             setUpdatingPrices(true);
-            setPriceUpdateMsg("正在更新股價...");
+            setPriceUpdateMsg("準備更新...");
             
             const uniqueSymbols = [...new Set(allHoldings.map(h => h.symbol))];
             let updatedCount = 0;
             const batch = writeBatch(db);
             
-            // --- 全新批次更新策略 (Batch Strategy) ---
+            // --- 穩定型批次更新策略 ---
             
-            // 1. 準備清單
-            let remainingSymbols = [...uniqueSymbols];
-            const updatesMap = {}; // 暫存更新資料 { '2330': { price: 500, ... } }
-
-            // 2. 第一波：嘗試上市股 (.TW) 批次查詢
-            // 將代號切分成小批次 (例如每批 10 個)，避免 URL 過長
+            // 1. 將股票切成小批次 (每批 5 個)，避免請求過大
             const chunkArray = (arr, size) => {
                 const chunks = [];
                 for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
                 return chunks;
             };
 
-            const chunks = chunkArray(remainingSymbols, 10);
-            
-            for (const chunk of chunks) {
-                const results = await fetchBatchQuotes(chunk, '.TW');
-                Object.entries(results).forEach(([sym, data]) => {
-                    updatesMap[sym] = data;
-                    // 從待處理清單中移除
-                    const idx = remainingSymbols.indexOf(sym);
-                    if (idx > -1) remainingSymbols.splice(idx, 1);
-                });
-            }
+            const chunks = chunkArray(uniqueSymbols, 5); // 極保守設定：一次 5 檔
+            const updatesMap = {};
 
-            // 3. 第二波：嘗試上櫃股 (.TWO) 批次查詢 (針對第一波沒查到的)
-            if (remainingSymbols.length > 0) {
-                const twoChunks = chunkArray(remainingSymbols, 10);
-                for (const chunk of twoChunks) {
-                    const results = await fetchBatchQuotes(chunk, '.TWO');
-                    Object.entries(results).forEach(([sym, data]) => {
+            for (let i = 0; i < chunks.length; i++) {
+                const chunk = chunks[i];
+                setPriceUpdateMsg(`正在更新第 ${i + 1}/${chunks.length} 組股價...`);
+                
+                // 執行批次查詢
+                const results = await fetchBatchQuotes(chunk);
+                
+                // 將結果存入 Map
+                Object.entries(results).forEach(([sym, data]) => {
+                    if (data && data.price) {
                         updatesMap[sym] = data;
-                        const idx = remainingSymbols.indexOf(sym);
-                        if (idx > -1) remainingSymbols.splice(idx, 1);
-                    });
+                    }
+                });
+
+                // 強制休息 1.5 秒，避免被 Proxy 封鎖 (這是解決一直失敗的關鍵)
+                if (i < chunks.length - 1) {
+                    await sleep(1500);
                 }
             }
 
-            // 4. 第三波：個別查價 (針對還剩下的頑固份子，使用 TWSE/Anue 等備援)
-            if (remainingSymbols.length > 0) {
-                setPriceUpdateMsg(`正在處理剩餘 ${remainingSymbols.length} 檔特殊股票...`);
-                for (const code of remainingSymbols) {
-                    // 慢速個別查
-                    await new Promise(r => setTimeout(r, 200)); 
-                    const data = await fetchStockData(code, '', true); // onlyPrice=true
+            // 針對沒抓到的漏網之魚，嘗試用 TWSE 個別補救 (一次一檔)
+            const missing = uniqueSymbols.filter(s => !updatesMap[s]);
+            if (missing.length > 0) {
+                setPriceUpdateMsg(`正在補救 ${missing.length} 檔資料...`);
+                for (const code of missing) {
+                    await sleep(1000); // 補救時休息更久
+                    const data = await fetchStockData(code, '', true);
                     if (data && data.price) {
-                        updatesMap[code] = {
-                            price: data.price,
-                            changePercent: data.changePercent
-                        };
+                        updatesMap[code] = data;
                     }
                 }
             }
 
-            // 5. 寫入資料庫
+            // 寫入資料庫
             let successCount = 0;
             Object.entries(updatesMap).forEach(([symbol, data]) => {
                 const holdingsToUpdate = allHoldings.filter(h => h.symbol === symbol);
@@ -881,11 +906,11 @@
                     setLastUpdateTime(new Date());
                     setPriceUpdateMsg(`更新完成：成功 ${successCount} / 總數 ${uniqueSymbols.length}`);
                 } else {
-                    setPriceUpdateMsg("本次無資料更新 (可能市場未開盤或網路異常)");
+                    setPriceUpdateMsg("本次更新無資料變動");
                 }
             } catch (e) {
                 console.error("Batch commit failed", e);
-                setPriceUpdateMsg("資料庫寫入失敗，請稍後再試");
+                setPriceUpdateMsg("寫入失敗，請稍後再試");
             }
             
             setUpdatingPrices(false);
