@@ -543,9 +543,9 @@
           const fetchStable = async (targetUrl) => {
              const encodedUrl = encodeURIComponent(targetUrl);
              
-             // 代理清單 (依穩定度排序，AllOrigins 雖然慢但最穩)
+             // 代理清單 (依穩定度排序)
              const strategies = [
-                 // 1. AllOrigins (解析 content)
+                 // 1. AllOrigins (解析 content，通常最穩)
                  async () => {
                      const r = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${Date.now()}`);
                      if (!r.ok) throw new Error('AO ' + r.status);
@@ -575,9 +575,8 @@
 
              for (const strategy of strategies) {
                  try {
-                     // 給每個請求 15 秒寬限期
                      const controller = new AbortController();
-                     const timeoutId = setTimeout(() => controller.abort(), 15000);
+                     const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超時
                      
                      const result = await Promise.race([
                          strategy(),
@@ -585,58 +584,56 @@
                      ]);
                      
                      clearTimeout(timeoutId);
-                     return result; // 成功就回傳
+                     return result;
                  } catch (e) {
-                     // 失敗就試下一個，中間休息 0.5 秒
-                     await sleep(500);
+                     await sleep(500); // 失敗休息 0.5s
                      continue;
                  }
              }
              throw new Error("All proxies failed");
           };
 
-          // 獲取單檔股票資料 (極致穩定版)
+          // 獲取單檔股票資料 (證交所優先版)
           const fetchStockData = async (code, currentName, onlyPrice = false) => {
              const cleanCode = code.toString().trim().toUpperCase();
              const needsName = !currentName || currentName.trim() === '';
 
              // 定義資料來源任務
              
-             // 1. Yahoo TW Autocomplete (名稱最準，比較不會擋)
-             const tryYahooName = async () => {
-                 if (onlyPrice) return null;
-                 try {
-                     const url = `https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService.getSuggestions?searchQuery=${cleanCode}`;
-                     const data = await fetchStable(url);
-                     if (data?.result?.length > 0) {
-                         const match = data.result.find(q => q.symbol.includes(cleanCode)) || data.result[0];
-                         if (match?.name) return { name: match.name };
-                     }
-                 } catch(e) {}
-                 return null;
-             };
-
-             // 2. TWSE (官方資料，含價格與名稱，穩定)
+             // 1. TWSE (證交所官方資料 - 最優先來源)
              const tryTwse = async () => {
                  try {
+                     // 同時查詢 上市(tse) 與 上櫃(otc)
                      const query = `tse_${cleanCode}.tw|otc_${cleanCode}.tw`;
-                     const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
+                     // 加上 timestamp 避免快取
+                     const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0&t=${Date.now()}`;
                      const data = await fetchStable(url);
+                     
+                     // 找到代號吻合的資料
                      const result = data?.msgArray?.find(item => item.c === cleanCode);
-                     if (result) {
-                        let p = parseFloat(result.z);
-                        if (isNaN(p)) p = parseFloat(result.b?.split('_')[0]);
-                        if (isNaN(p)) p = parseFloat(result.a?.split('_')[0]);
-                        const y = parseFloat(result.y);
-                        if (!isNaN(p)) {
-                            return { name: result.n, price: p, changePercent: ((p - y) / y) * 100 };
-                        }
+                     
+                     if (result && result.n) {
+                        // 嘗試解析價格
+                        let p = parseFloat(result.z); // 最近成交價
+                        if (isNaN(p)) p = parseFloat(result.b?.split('_')[0]); // 最佳買入
+                        if (isNaN(p)) p = parseFloat(result.a?.split('_')[0]); // 最佳賣出
+                        
+                        const y = parseFloat(result.y); // 昨收
+                        const changePercent = (!isNaN(p) && !isNaN(y)) ? ((p - y) / y) * 100 : 0;
+                        
+                        return { 
+                            name: result.n, // 證交所的中文名稱 (ex: 台積電, 元大台灣50)
+                            price: !isNaN(p) ? p : null, // 若盤前無價格則為 null
+                            changePercent: changePercent 
+                        };
                      }
-                 } catch(e) {}
+                 } catch(e) {
+                     // console.warn("TWSE fetch error", e);
+                 }
                  return null;
              };
 
-             // 3. Yahoo Quote API (價格備援)
+             // 2. Yahoo Quote API (價格備援 & 名稱備援)
              const tryYahooQuote = async () => {
                  try {
                      const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${cleanCode}.TW,${cleanCode}.TWO`;
@@ -653,7 +650,7 @@
                  return null;
              };
 
-             // 4. CnYes (鉅亨網 - 名稱備援)
+             // 3. CnYes (鉅亨網 - 純名稱最後備援)
              const tryCnYes = async () => {
                  if (onlyPrice) return null;
                  try {
@@ -667,39 +664,45 @@
                  return null;
              };
 
-             // --- 執行邏輯：依序嘗試，直到滿意為止 ---
+             // --- 執行邏輯：依序嘗試 ---
              
              let finalName = currentName;
              let finalPrice = null;
              let finalChange = null;
 
-             // 步驟 A: 如果需要價格 (或 TWSE 能同時給名與價)
-             // 優先試 TWSE (官方最準)
+             // 步驟 A: 優先嘗試證交所 (TWSE)
              let data = await tryTwse();
              
-             // 如果 TWSE 失敗，試 Yahoo Quote
-             if (!data || isNaN(data.price)) {
-                 await sleep(500); // 喘口氣
-                 data = await tryYahooQuote();
-             }
-
              if (data) {
-                 finalPrice = data.price;
-                 finalChange = data.changePercent;
+                 // 只要證交所有回傳名字，就使用它
                  if (data.name) finalName = data.name;
+                 if (data.price !== null) {
+                     finalPrice = data.price;
+                     finalChange = data.changePercent;
+                 }
              }
 
-             // 步驟 B: 如果還是沒有名字 (且需要名字)，專門去查名字
+             // 步驟 B: 如果 TWSE 失敗或沒價格，嘗試 Yahoo 補救
+             if (finalPrice === null || (!finalName && needsName)) {
+                 if (!data) await sleep(500); // 喘口氣
+                 const yData = await tryYahooQuote();
+                 if (yData) {
+                     if (finalPrice === null) {
+                         finalPrice = yData.price;
+                         finalChange = yData.changePercent;
+                     }
+                     // 如果 TWSE 沒名字，才用 Yahoo 的
+                     if (needsName && (!finalName || finalName === cleanCode)) {
+                         finalName = yData.name;
+                     }
+                 }
+             }
+
+             // 步驟 C: 如果還是沒名字，最後試試鉅亨網
              if (needsName && (!finalName || finalName === cleanCode)) {
                  await sleep(500);
-                 const nameData = await tryYahooName();
-                 if (nameData?.name) {
-                     finalName = nameData.name;
-                 } else {
-                     await sleep(500);
-                     const cnYesData = await tryCnYes();
-                     if (cnYesData?.name) finalName = cnYesData.name;
-                 }
+                 const cnYesData = await tryCnYes();
+                 if (cnYesData?.name) finalName = cnYesData.name;
              }
 
              // 如果完全沒抓到東西，回傳 null
