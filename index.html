@@ -621,7 +621,7 @@
             });
           }, [allHoldings, activeYear, members]);
 
-          // --- Chart Data Preparation (RESTORED) ---
+          // --- Chart Data Preparation ---
           const allocationData = useMemo(() => {
              const data = {};
              aggregatedHoldings.forEach(h => {
@@ -652,7 +652,7 @@
 
           const fetchStockData = async (code, type) => {
             if (!code) return null;
-            const uCode = code.toUpperCase(); // Ensure code is uppercase for API consistency
+            const uCode = code.toUpperCase(); 
             const yahooSymbol = `${uCode}.TW`; 
             const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
             try {
@@ -695,11 +695,7 @@
           const handleSymbolBlur = async () => {
              let sym = holdingForm.symbol;
              if (!sym || sym.trim() === '') return;
-             
-             // 強制轉大寫並去除空白
              sym = sym.trim().toUpperCase();
-             
-             // 更新輸入框顯示 (自動修正輸入欄)
              setHoldingForm(prev => ({ ...prev, symbol: sym }));
 
              setLoadingStockInfo(true);
@@ -708,7 +704,7 @@
                 if (quote) {
                     setHoldingForm(prev => ({
                         ...prev,
-                        symbol: sym, // 確保儲存時也是大寫
+                        symbol: sym,
                         name: quote.name || prev.name,
                         price: quote.price ? quote.price.toString() : prev.price
                     }));
@@ -770,7 +766,16 @@
 
           const handleSaveHolding = async () => {
              if (!user) return;
-             const { shares, price, fee, type } = holdingForm;
+             
+             // Extract ID to prevent saving it into the document data
+             const { shares, price, fee, type, id, ...restForm } = holdingForm; 
+             
+             // 1. Validation
+             if (!shares || !price || isNaN(parseFloat(shares)) || isNaN(parseFloat(price))) {
+                 alert("請輸入有效的股數與價格");
+                 return;
+             }
+
              const numShares = parseFloat(shares);
              const numPrice = parseFloat(price);
              const numFee = parseFloat(fee) || 0;
@@ -778,22 +783,32 @@
              const cost = type === 'buy' ? (numPrice) + (numFee / numShares) : (numPrice) - (numFee / numShares); 
              const signedShares = type === 'buy' ? numShares : -numShares;
 
+             // 2. Construct Payload (Ensure no undefined)
              const payload = {
-                ...holdingForm,
+                ...restForm, 
                 shares: signedShares,
+                fee: numFee.toString(),
                 cost: cost, 
                 price: numPrice, 
                 lastUpdateTimestamp: Math.floor(Date.now() / 1000)
              };
              
-             if (editingHolding) {
-                await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', editingHolding.id), payload);
-             } else {
-                await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'holdings'), payload);
+             // Remove any undefined keys to prevent Firestore errors
+             Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
+
+             try {
+                 if (editingHolding) {
+                    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', editingHolding.id), payload);
+                 } else {
+                    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'holdings'), payload);
+                 }
+                 setIsAddHoldingOpen(false);
+                 setEditingHolding(null);
+                 resetForm();
+             } catch (e) {
+                 console.error("Save failed", e);
+                 alert("儲存失敗: " + e.message);
              }
-             setIsAddHoldingOpen(false);
-             setEditingHolding(null);
-             resetForm();
           };
 
           const handleDeleteHolding = (id, e) => {
@@ -808,6 +823,7 @@
                 setDeleteConfirm(null);
              } catch (error) {
                 console.error("Delete failed:", error);
+                alert("刪除失敗: " + error.message);
              }
           };
 
@@ -1239,7 +1255,20 @@
                                      return (
                                      <tr 
                                         key={h.id} 
-                                        onClick={() => { setEditingHolding(h); setHoldingForm({...h, date: h.date, type: h.shares > 0 ? 'buy' : 'sell', shares: Math.abs(h.shares).toString() }); setIsAddHoldingOpen(true); }}
+                                        onClick={() => { 
+                                            // Safely merging default values to handle missing fields in legacy/imported data
+                                            setEditingHolding(h); 
+                                            setHoldingForm({
+                                                ...holdingForm, // defaults
+                                                ...h, 
+                                                date: h.date, 
+                                                type: h.shares > 0 ? 'buy' : 'sell', 
+                                                shares: Math.abs(h.shares).toString(),
+                                                fee: h.fee ? h.fee.toString() : "1",
+                                                note: h.note || ""
+                                            }); 
+                                            setIsAddHoldingOpen(true); 
+                                        }}
                                         className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
                                      >
                                         <td className="p-3 pl-4 text-slate-500 whitespace-nowrap">{h.date}</td>
