@@ -693,8 +693,7 @@
 
           const fetchStockData = async (code, type) => {
             if (!code) return null;
-            const uCode = code.toUpperCase(); 
-            const yahooSymbol = `${uCode}.TW`; 
+            const yahooSymbol = `${code}.TW`; 
             const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
             try {
                const data = await fetchWithDualProxy(yahooUrl);
@@ -704,16 +703,16 @@
                     price: meta.regularMarketPrice,
                     change: meta.regularMarketPrice - meta.chartPreviousClose,
                     changePercent: ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100,
-                    name: uCode,
+                    name: code, // Reverted to code
                     source: 'Yahoo'
                   };
                }
             } catch (e) {}
 
-            const query = `tse_${uCode}.tw|otc_${uCode}.tw`;
+            const query = `tse_${code}.tw|otc_${code}.tw`;
             const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
             const data = await fetchWithDualProxy(twseUrl);
-            const result = data?.msgArray?.find(item => item.c === uCode);
+            const result = data?.msgArray?.find(item => item.c === code);
             if (result) {
               let price = parseFloat(result.z);
               if (isNaN(price)) price = parseFloat(result.b?.split('_')[0]);
@@ -734,18 +733,17 @@
           };
 
           const handleSymbolBlur = async () => {
-             let sym = holdingForm.symbol;
+             const sym = holdingForm.symbol;
              if (!sym || sym.trim() === '') return;
-             sym = sym.trim().toUpperCase();
-             setHoldingForm(prev => ({ ...prev, symbol: sym }));
-
+             // Reverted forced uppercase
+             
              setLoadingStockInfo(true);
              try {
                 const quote = await fetchStockData(sym, "");
                 if (quote) {
                     setHoldingForm(prev => ({
                         ...prev,
-                        symbol: sym,
+                        // symbol: sym, // No need to reset symbol
                         name: quote.name || prev.name,
                         price: quote.price ? quote.price.toString() : prev.price
                     }));
@@ -1060,15 +1058,6 @@
             }
           };
 
-          const renderMonthFilter = () => (
-            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-               <button onClick={() => setActiveMonth('all')} className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${activeMonth === 'all' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>全年</button>
-               {Array.from({length: 12}, (_, i) => i + 1).map(m => (
-                 <button key={m} onClick={() => setActiveMonth(m)} className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${activeMonth === m ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>{m}月</button>
-               ))}
-            </div>
-          );
-
           return (
             <div className="min-h-screen pb-6">
               {/* Header */}
@@ -1078,25 +1067,25 @@
                         <div className="bg-blue-600 text-white p-1.5 rounded-lg flex-shrink-0"><TrendingUp size={20}/></div>
                         <h1 className="font-bold text-slate-800 text-lg hidden lg:block whitespace-nowrap">家庭資產管家</h1>
                         
-                        {/* Selectors Group */}
+                        {/* Selectors Group - Integrated Year/Month */}
                         <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide">
                             <select 
-                              value={activeYear} 
-                              onChange={(e) => setActiveYear(e.target.value)} 
-                              className="bg-slate-100 text-slate-700 text-sm font-bold py-1.5 px-2 rounded-lg border-none focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-slate-200 transition-colors"
+                              value={`${activeYear}-${activeMonth}`}
+                              onChange={(e) => {
+                                  const [y, m] = e.target.value.split('-');
+                                  setActiveYear(y);
+                                  setActiveMonth(m === 'all' ? 'all' : parseInt(m));
+                              }}
+                              className="bg-slate-100 text-slate-700 text-sm font-bold py-1.5 px-3 rounded-lg border-none focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-slate-200 transition-colors"
                             >
-                              {availableYears.map(y => <option key={y} value={y}>{y}年</option>)}
-                            </select>
-
-                            <select 
-                              value={activeMonth} 
-                              onChange={(e) => setActiveMonth(e.target.value === 'all' ? 'all' : parseInt(e.target.value))} 
-                              className="bg-slate-100 text-slate-700 text-sm font-bold py-1.5 px-2 rounded-lg border-none focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-slate-200 transition-colors"
-                            >
-                              <option value="all">全年</option>
-                              {Array.from({length: 12}, (_, i) => i + 1).map(m => (
-                                <option key={m} value={m}>{m}月</option>
-                              ))}
+                                {availableYears.map(year => (
+                                    <optgroup key={year} label={`${year}年`}>
+                                        <option value={`${year}-all`}>{year}年 (全年)</option>
+                                        {Array.from({length: 12}, (_, i) => i + 1).map(m => (
+                                            <option key={`${year}-${m}`} value={`${year}-${m}`}>{m}月</option>
+                                        ))}
+                                    </optgroup>
+                                ))}
                             </select>
                         </div>
                     </div>
