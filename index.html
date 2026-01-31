@@ -68,7 +68,7 @@
         import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
         import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid, Area, AreaChart } from 'recharts';
-        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2, ChevronRight, XCircle, UserPlus, AlertTriangle, Download, FileJson, Copy } from 'lucide-react';
+        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2, ChevronRight, XCircle, UserPlus, AlertTriangle, Download, FileJson, Copy, LockOpen } from 'lucide-react';
 
         // Firebase (保持 CDN 連結)
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
@@ -369,12 +369,16 @@
           const [deleteConfirm, setDeleteConfirm] = useState(null); 
 
           // Security States
-          const [isLocked, setIsLocked] = useState(true);
+          const [isAuthenticated, setIsAuthenticated] = useState(false); // Controls edit access
           const [hasPin, setHasPin] = useState(false);
+          const [showUnlockModal, setShowUnlockModal] = useState(false); // Controls PIN modal visibility
           const [pinInput, setPinInput] = useState("");
           const [storedPin, setStoredPin] = useState(null);
           const [isSettingsOpen, setIsSettingsOpen] = useState(false);
           const [newPin, setNewPin] = useState("");
+          
+          // Pending action to execute after unlock
+          const pendingActionRef = useRef(null);
 
           // Year & Month Management
           const currentYear = new Date().getFullYear().toString();
@@ -442,14 +446,15 @@
                 if (snap.exists() && snap.data().pin) {
                   setHasPin(true);
                   setStoredPin(snap.data().pin);
-                  setIsLocked(true);
+                  setIsAuthenticated(false); // Locked by default if PIN exists
                 } else {
                   setHasPin(false);
-                  setIsLocked(false);
+                  setIsAuthenticated(true); // Unlocked if no PIN
                 }
               } catch (e) {
                 console.error("Security check failed", e);
-                setIsLocked(false);
+                // Default to open if check fails to avoid lockout, or locked? Let's assume open for basic safety or keep default false
+                setIsAuthenticated(false); 
               }
             };
             checkSecurity();
@@ -479,6 +484,42 @@
             });
             return () => { unsubMembers(); unsubHoldings(); };
           }, [user]);
+
+          // --- Auth Logic ---
+          const handleAuthRequired = (action) => {
+             if (!hasPin || isAuthenticated) {
+                 action();
+             } else {
+                 pendingActionRef.current = action;
+                 setShowUnlockModal(true);
+             }
+          };
+
+          const handleUnlock = () => {
+            if (pinInput === storedPin) {
+                setIsAuthenticated(true);
+                setShowUnlockModal(false);
+                setPinInput("");
+                // Execute pending action if any
+                if (pendingActionRef.current) {
+                    pendingActionRef.current();
+                    pendingActionRef.current = null;
+                }
+            } else {
+                alert("密碼錯誤，請重試");
+            }
+          };
+
+          const handleToggleLock = () => {
+              if (isAuthenticated && hasPin) {
+                  // Lock
+                  setIsAuthenticated(false);
+                  alert("已鎖定編輯權限");
+              } else if (!isAuthenticated && hasPin) {
+                  // Open unlock modal
+                  setShowUnlockModal(true);
+              }
+          };
 
           // --- Filtered Data ---
           const holdings = useMemo(() => {
@@ -621,7 +662,7 @@
             });
           }, [allHoldings, activeYear, members]);
 
-          // --- Chart Data Preparation ---
+          // --- Chart Data Preparation (RESTORED) ---
           const allocationData = useMemo(() => {
              const data = {};
              aggregatedHoldings.forEach(h => {
@@ -718,6 +759,13 @@
 
           const handleUpdatePrices = async () => {
             if (!user || allHoldings.length === 0) return;
+            // Auth check for update price (optional, but safe to keep)
+            if (hasPin && !isAuthenticated) {
+               pendingActionRef.current = handleUpdatePrices;
+               setShowUnlockModal(true);
+               return;
+            }
+
             setUpdatingPrices(true);
             setPriceUpdateMsg("正在更新股價...");
             
@@ -850,13 +898,12 @@
           };
           
           const handleDrillDown = (memberId, symbol) => {
+             // For drill down view (read-only), we don't need auth.
+             // But if they click to edit inside, that's when we check.
+             // So this function just changes view mode.
              setListFilter({ memberId, symbol });
              setHoldingViewMode('detail');
              setActiveMonth('all'); 
-          };
-
-          const handleUnlock = () => {
-            if (pinInput === storedPin) { setIsLocked(false); setPinInput(""); } else { alert("密碼錯誤，請重試"); }
           };
           
           const handleSetPin = async () => {
@@ -866,7 +913,8 @@
               setStoredPin(newPin);
               setHasPin(true);
               setNewPin("");
-              setIsSettingsOpen(false);
+              // Setting a new PIN automatically authenticates
+              setIsAuthenticated(true); 
               alert("安全密碼設定成功！");
             } catch (e) { console.error(e); }
           };
@@ -915,7 +963,6 @@
                     const batch = writeBatch(db);
                     let count = 0;
                     
-                    // Import Members
                     for(const m of data.members) {
                         const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'members', m.id);
                         const {id, ...rest} = m;
@@ -923,21 +970,15 @@
                         count++;
                     }
                     
-                    // Import Holdings
                     for(const h of data.holdings) {
                         const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id);
                         const {id, ...rest} = h;
                         batch.set(ref, rest);
                         count++;
-                        
-                        // Commit every 450 ops (limit is 500) - Basic implementation
-                        // For this simple app, assuming total dataset is small. 
-                        // If larger, would need multiple batches.
                     }
                     
                     await batch.commit();
                     alert(`成功匯入 ${data.members.length} 位成員與 ${data.holdings.length} 筆交易紀錄！`);
-                    // Optional: reload to ensure fresh state
                     window.location.reload();
                 } catch(e) {
                     alert("匯入失敗：" + e.message);
@@ -961,8 +1002,6 @@
                 const duplicates = [];
                 
                 docs.forEach(doc => {
-                    // Create a unique key based on critical fields
-                    // Using floor for shares/price to handle slight float differences if any, though usually exact
                     const key = `${doc.memberId}|${doc.symbol}|${doc.date}|${doc.type}|${parseFloat(doc.shares)}|${parseFloat(doc.price)}`;
                     if(seen.has(key)) {
                         duplicates.push(doc.id);
@@ -991,6 +1030,36 @@
             }
           };
 
+          const handleClearData = async () => {
+            if (!user) return;
+            if (!confirm("⚠️ 危險操作警告！\n\n此操作將「永久刪除」所有成員與交易紀錄，且無法復原！\n\n強烈建議您先執行「匯出備份」。\n\n確定要繼續清空所有資料嗎？")) return;
+            if (!confirm("再次確認：您真的要清空系統中的所有資料嗎？")) return;
+
+            try {
+                setProcessingSettings(true);
+                const batch = writeBatch(db);
+                
+                const holdingsSnap = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, 'holdings'));
+                holdingsSnap.forEach(doc => {
+                    batch.delete(doc.ref);
+                });
+
+                const membersSnap = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, 'members'));
+                membersSnap.forEach(doc => {
+                    batch.delete(doc.ref);
+                });
+
+                await batch.commit();
+                alert("系統已重置，所有資料已清空。");
+                window.location.reload();
+            } catch (e) {
+                console.error(e);
+                alert("清空失敗：" + e.message);
+            } finally {
+                setProcessingSettings(false);
+            }
+          };
+
           const renderMonthFilter = () => (
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
                <button onClick={() => setActiveMonth('all')} className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${activeMonth === 'all' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>全年</button>
@@ -999,22 +1068,6 @@
                ))}
             </div>
           );
-
-          if (isLocked) {
-             return (
-               <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
-                 <Card className="w-full max-w-sm p-8 flex flex-col items-center">
-                   <div className="bg-blue-100 p-4 rounded-full mb-4"><Lock size={32} className="text-blue-600" /></div>
-                   <h2 className="text-xl font-bold text-slate-800 mb-2">安全鎖定</h2>
-                   <p className="text-slate-500 mb-6 text-center">請輸入 PIN 碼以存取您的資產資料</p>
-                   <div className="flex gap-2 w-full mb-4">
-                     <input type="password" value={pinInput} onChange={(e) => setPinInput(e.target.value)} className="w-full px-4 py-3 text-center text-lg tracking-widest bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="****" maxLength={6} />
-                   </div>
-                   <Button onClick={handleUnlock} className="w-full">解鎖</Button>
-                 </Card>
-               </div>
-             );
-          }
 
           return (
             <div className="min-h-screen pb-6">
@@ -1050,7 +1103,7 @@
 
                     <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
                         <button 
-                            onClick={handleUpdatePrices} 
+                            onClick={() => handleAuthRequired(handleUpdatePrices)} 
                             disabled={updatingPrices}
                             className={`p-2 rounded-full transition-colors ${updatingPrices ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}
                             title="更新股價"
@@ -1058,9 +1111,21 @@
                             <RefreshCw size={20} className={updatingPrices ? "animate-spin" : ""}/>
                         </button>
 
-                        <button onClick={() => setIsAddMemberOpen(true)} className="p-2 text-slate-500 hover:bg-slate-100 rounded-full" aria-label="新增成員"><UserPlus size={20}/></button>
-                        <button onClick={() => setIsSettingsOpen(true)} className="p-2 text-slate-500 hover:bg-slate-100 rounded-full"><Settings size={20}/></button>
-                        <Button variant="secondary" onClick={() => { resetForm(); setIsAddHoldingOpen(true); }} className="px-3 text-sm ml-1 font-bold">新增</Button>
+                        <button onClick={() => handleAuthRequired(() => setIsAddMemberOpen(true))} className="p-2 text-slate-500 hover:bg-slate-100 rounded-full" aria-label="新增成員"><UserPlus size={20}/></button>
+                        <button onClick={() => handleAuthRequired(() => setIsSettingsOpen(true))} className="p-2 text-slate-500 hover:bg-slate-100 rounded-full"><Settings size={20}/></button>
+                        
+                        {/* Lock Button */}
+                        {hasPin && (
+                            <button 
+                                onClick={handleToggleLock}
+                                className={`p-2 rounded-full transition-colors ${isAuthenticated ? 'text-emerald-500 bg-emerald-50' : 'text-red-500 bg-red-50'}`}
+                                title={isAuthenticated ? "點擊鎖定" : "點擊解鎖"}
+                            >
+                                {isAuthenticated ? <LockOpen size={20}/> : <Lock size={20}/>}
+                            </button>
+                        )}
+
+                        <Button variant="secondary" onClick={() => handleAuthRequired(() => { resetForm(); setIsAddHoldingOpen(true); })} className="px-3 text-sm ml-1 font-bold">新增</Button>
                     </div>
                 </div>
                 
@@ -1193,7 +1258,11 @@
                                </thead>
                                <tbody className="divide-y divide-slate-100">
                                   {aggregatedHoldings.map((h, i) => (
-                                     <tr key={i} className="hover:bg-slate-50/80 transition-colors">
+                                     <tr 
+                                        key={i} 
+                                        onClick={() => handleDrillDown(h.memberId, h.symbol)}
+                                        className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
+                                     >
                                         <td className="p-3 pl-4 font-medium text-slate-700">{h.memberName}</td>
                                         <td className="p-3">
                                            <div className="font-bold text-slate-800">{h.name}</div>
@@ -1214,7 +1283,12 @@
                                         </td>
                                         <td className={`p-3 text-right ${h.realizedProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>{formatNumber(h.realizedProfit)}</td>
                                         <td className="p-3 text-center">
-                                           <button onClick={() => handleDrillDown(h.memberId, h.symbol)} className="text-blue-600 hover:text-blue-800 text-xs font-bold border border-blue-200 hover:bg-blue-50 px-2 py-1 rounded transition-colors">編輯明細</button>
+                                           <button 
+                                              onClick={(e) => { e.stopPropagation(); handleAuthRequired(() => handleDrillDown(h.memberId, h.symbol)); }} 
+                                              className="text-blue-600 hover:text-blue-800 text-xs font-bold border border-blue-200 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
+                                           >
+                                              編輯明細
+                                           </button>
                                         </td>
                                      </tr>
                                   ))}
@@ -1255,7 +1329,7 @@
                                      return (
                                      <tr 
                                         key={h.id} 
-                                        onClick={() => { 
+                                        onClick={() => handleAuthRequired(() => { 
                                             // Safely merging default values to handle missing fields in legacy/imported data
                                             setEditingHolding(h); 
                                             setHoldingForm({
@@ -1268,7 +1342,7 @@
                                                 note: h.note || ""
                                             }); 
                                             setIsAddHoldingOpen(true); 
-                                        }}
+                                        })}
                                         className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
                                      >
                                         <td className="p-3 pl-4 text-slate-500 whitespace-nowrap">{h.date}</td>
@@ -1279,7 +1353,7 @@
                                         <td className="p-3 text-right text-slate-500">{formatNumber(h.price)}</td>
                                         <td className="p-3 text-right font-medium text-slate-700">{formatNumber(Math.abs(h.shares * h.price))}</td>
                                         <td className="p-3 text-center">
-                                           <button onClick={(e) => handleDeleteHolding(h.id, e)} className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"><Trash2 size={16}/></button>
+                                           <button onClick={(e) => { e.stopPropagation(); handleAuthRequired(() => setDeleteConfirm({ id: h.id })); }} className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"><Trash2 size={16}/></button>
                                         </td>
                                      </tr>
                                   )})}
@@ -1324,6 +1398,16 @@
                 year={activeYear}
               />
 
+              {/* Unlock Modal (New!) */}
+              <Modal isOpen={showUnlockModal} onClose={() => setShowUnlockModal(false)} title="安全驗證">
+                 <div className="space-y-4 text-center">
+                    <div className="bg-blue-100 p-3 rounded-full inline-block"><Lock size={24} className="text-blue-600" /></div>
+                    <p className="text-slate-600">請輸入 PIN 碼以執行此操作</p>
+                    <input type="password" value={pinInput} onChange={(e) => setPinInput(e.target.value)} className="w-full px-4 py-3 text-center text-lg tracking-widest bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="****" maxLength={6} />
+                    <Button onClick={handleUnlock} className="w-full">驗證</Button>
+                 </div>
+              </Modal>
+
               {/* Delete Confirmation Modal */}
               <Modal isOpen={!!deleteConfirm} onClose={() => setDeleteConfirm(null)} title="刪除確認">
                  <div className="space-y-4">
@@ -1359,8 +1443,11 @@
                                 <Upload size={16}/> 匯入資料
                              </Button>
                           </div>
-                          <Button variant="secondary" onClick={handleRemoveDuplicates} isLoading={processingSettings} className="col-span-2 justify-center text-red-500 border-red-100 hover:bg-red-50">
-                             <Copy size={16}/> 移除重複交易
+                          <Button variant="secondary" onClick={handleRemoveDuplicates} isLoading={processingSettings} className="justify-center text-slate-600">
+                             <Copy size={16}/> 移除重複
+                          </Button>
+                          <Button variant="danger" onClick={handleClearData} isLoading={processingSettings} className="justify-center bg-red-50 text-red-600 hover:bg-red-100 border-red-100">
+                             <Trash2 size={16}/> 清空資料
                           </Button>
                        </div>
                     </div>
