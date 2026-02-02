@@ -117,7 +117,7 @@
           );
         };
 
-        const Input = ({ label, value, onChange, onBlur, type = "text", placeholder, className = "" }) => (
+        const Input = ({ label, value, onChange, onBlur, onKeyDown, type = "text", placeholder, className = "" }) => (
           <div className={`flex flex-col gap-1 ${className}`}>
             {label && <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{label}</label>}
             <input
@@ -125,6 +125,7 @@
               value={value}
               onChange={onChange}
               onBlur={onBlur}
+              onKeyDown={onKeyDown}
               placeholder={placeholder}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-slate-800"
             />
@@ -693,7 +694,42 @@
 
           const fetchStockData = async (code, type) => {
             if (!code) return null;
-            const yahooSymbol = `${code}.TW`; 
+            // Force uppercase for consistent API querying
+            const uCode = code.trim().toUpperCase(); 
+            
+            // 1. Try TWSE MIS First (Priority: Chinese Names & Official Data)
+            // Queries both TSE (Listed) and OTC (Over-the-counter)
+            const query = `tse_${uCode}.tw|otc_${uCode}.tw`;
+            const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
+            
+            try {
+                const data = await fetchWithDualProxy(twseUrl);
+                const result = data?.msgArray?.find(item => item.c === uCode);
+                
+                if (result) {
+                  let price = parseFloat(result.z);
+                  if (isNaN(price)) price = parseFloat(result.b?.split('_')[0]);
+                  if (isNaN(price)) price = parseFloat(result.a?.split('_')[0]);
+                  if (isNaN(price)) price = parseFloat(result.y); // Yesterday's closing if no trade
+                  
+                  const yesterday = parseFloat(result.y);
+                  const change = price - yesterday;
+                  const changePercent = (change / yesterday) * 100;
+                  
+                  return {
+                    price: price,
+                    change: change,
+                    changePercent: changePercent,
+                    name: result.n, // Returns the Chinese name (e.g., 元大台灣50正2)
+                    source: 'TWSE'
+                  };
+                }
+            } catch (e) {
+                console.warn("TWSE fetch failed, failing over to Yahoo...", e);
+            }
+
+            // 2. Fallback to Yahoo Finance (Reliable Price, but Name might be English/Code)
+            const yahooSymbol = `${uCode}.TW`; 
             const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
             try {
                const data = await fetchWithDualProxy(yahooUrl);
@@ -703,49 +739,32 @@
                     price: meta.regularMarketPrice,
                     change: meta.regularMarketPrice - meta.chartPreviousClose,
                     changePercent: ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100,
-                    name: code, // Reverted to code
+                    name: uCode, // Fallback to code if name unavailable
                     source: 'Yahoo'
                   };
                }
             } catch (e) {}
 
-            const query = `tse_${code}.tw|otc_${code}.tw`;
-            const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
-            const data = await fetchWithDualProxy(twseUrl);
-            const result = data?.msgArray?.find(item => item.c === code);
-            if (result) {
-              let price = parseFloat(result.z);
-              if (isNaN(price)) price = parseFloat(result.b?.split('_')[0]);
-              if (isNaN(price)) price = parseFloat(result.a?.split('_')[0]);
-              if (isNaN(price)) price = parseFloat(result.y);
-              const yesterday = parseFloat(result.y);
-              const change = price - yesterday;
-              const changePercent = (change / yesterday) * 100;
-              return {
-                price: price,
-                change: change,
-                changePercent: changePercent,
-                name: result.n,
-                source: 'TWSE'
-              };
-            }
             return null; 
           };
 
-          const handleSymbolBlur = async () => {
-             const sym = holdingForm.symbol;
+          const performSymbolSearch = async () => {
+             let sym = holdingForm.symbol;
              if (!sym || sym.trim() === '') return;
-             // Reverted forced uppercase
              
+             // Auto-convert to uppercase for UX consistency
+             sym = sym.trim().toUpperCase();
+             setHoldingForm(prev => ({ ...prev, symbol: sym }));
+
              setLoadingStockInfo(true);
              try {
                 const quote = await fetchStockData(sym, "");
                 if (quote) {
                     setHoldingForm(prev => ({
                         ...prev,
-                        // symbol: sym, // No need to reset symbol
+                        symbol: sym,
                         name: quote.name || prev.name,
-                        price: quote.price ? quote.price.toString() : prev.price
+                        // Price NOT set here, preserving user input or empty
                     }));
                 }
              } catch (e) {
@@ -753,6 +772,17 @@
              } finally {
                 setLoadingStockInfo(false);
              }
+          };
+
+          const handleSymbolBlur = () => {
+              performSymbolSearch();
+          };
+
+          const handleSymbolKeyDown = (e) => {
+              if (e.key === 'Enter') {
+                  e.preventDefault(); // Prevent accidental form submit if wrapped
+                  performSymbolSearch();
+              }
           };
 
           const handleUpdatePrices = async () => {
@@ -1057,6 +1087,15 @@
                 setProcessingSettings(false);
             }
           };
+
+          const renderMonthFilter = () => (
+            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+               <button onClick={() => setActiveMonth('all')} className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${activeMonth === 'all' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>全年</button>
+               {Array.from({length: 12}, (_, i) => i + 1).map(m => (
+                 <button key={m} onClick={() => setActiveMonth(m)} className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${activeMonth === m ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>{m}月</button>
+               ))}
+            </div>
+          );
 
           return (
             <div className="min-h-screen pb-6">
@@ -1468,7 +1507,7 @@
                   {/* Stock Symbol Input with Auto-fill */}
                   <div className="grid grid-cols-2 gap-3">
                      <div className="flex flex-col gap-1 relative">
-                        <Input label="股票代號" placeholder="例如：2330" value={holdingForm.symbol} onChange={e => setHoldingForm({...holdingForm, symbol: e.target.value})} onBlur={handleSymbolBlur} />
+                        <Input label="股票代號" placeholder="例如：2330" value={holdingForm.symbol} onChange={e => setHoldingForm({...holdingForm, symbol: e.target.value})} onBlur={handleSymbolBlur} onKeyDown={handleSymbolKeyDown} />
                         {loadingStockInfo && <div className="absolute right-3 top-8 text-slate-400 animate-spin"><Loader2 size={16}/></div>}
                      </div>
                      <Input label="股票名稱" placeholder="台積電" value={holdingForm.name} onChange={e => setHoldingForm({...holdingForm, name: e.target.value})} />
