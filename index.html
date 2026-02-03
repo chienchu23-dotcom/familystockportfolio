@@ -1065,6 +1065,7 @@
 
           const handleUpdatePrices = async () => {
             if (!user || allHoldings.length === 0) return;
+            // Auth check for update price (optional, but safe to keep)
             if (hasPin && !isAuthenticated) {
                pendingActionRef.current = handleUpdatePrices;
                setShowUnlockModal(true);
@@ -1072,39 +1073,136 @@
             }
 
             setUpdatingPrices(true);
-            setPriceUpdateMsg("正在更新股價...");
+            setPriceUpdateMsg("正在篩選持股並連線...");
             
-            const uniqueSymbols = [...new Set(allHoldings.map(h => h.symbol))];
-            let successCount = 0;
-            const batch = writeBatch(db);
-            const now = Math.floor(Date.now() / 1000);
+            try {
+                // 1. 智慧篩選：只抓取「庫存 > 0」的股票
+                const inventory = {};
+                allHoldings.forEach(h => {
+                    const s = parseFloat(h.shares);
+                    inventory[h.symbol] = (inventory[h.symbol] || 0) + s;
+                });
+                
+                // 過濾出目前持有的股票代號 (庫存 > 0.001 避免浮點數誤差)
+                const activeSymbols = Object.keys(inventory).filter(sym => inventory[sym] > 0.001);
+                
+                if (activeSymbols.length === 0) {
+                    setPriceUpdateMsg("目前無持有中的股票需更新");
+                    setUpdatingPrices(false);
+                    setTimeout(() => setPriceUpdateMsg(""), 3000);
+                    return;
+                }
 
-            for (const symbol of uniqueSymbols) {
-               const stockData = await fetchStockData(symbol);
-               if (stockData) {
-                  const targetDocs = allHoldings.filter(h => h.symbol === symbol);
-                  targetDocs.forEach(docData => {
-                     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', docData.id);
-                     batch.update(docRef, {
-                        currentPrice: stockData.price,
-                        dailyChangePercent: stockData.changePercent,
-                        lastUpdateTimestamp: now
-                     });
-                  });
-                  successCount++;
-               }
-               await new Promise(r => setTimeout(r, 200));
-            }
+                setPriceUpdateMsg(`正在更新 ${activeSymbols.length} 檔持股價格...`);
 
-            if (successCount > 0) {
-               await batch.commit();
-               setPriceUpdateMsg(`成功更新 ${successCount} 檔股票價格`);
-               setLastUpdateTime(new Date());
-            } else {
-               setPriceUpdateMsg("更新失敗，請稍後再試");
+                const batch = writeBatch(db);
+                const now = Math.floor(Date.now() / 1000);
+                let successCount = 0;
+                
+                // 2. 批次查詢策略 (Batching)
+                // 台灣證交所 API 支援一次查詢多檔，我們設定每批 20 檔，大幅減少請求次數
+                const CHUNK_SIZE = 20; 
+                const chunks = [];
+                for (let i = 0; i < activeSymbols.length; i += CHUNK_SIZE) {
+                    chunks.push(activeSymbols.slice(i, i + CHUNK_SIZE));
+                }
+
+                // 內部函數：處理單一股票更新到 Firestore Batch
+                const stageStockUpdate = (symbol, price, changePercent) => {
+                    const targetDocs = allHoldings.filter(h => h.symbol === symbol);
+                    targetDocs.forEach(docData => {
+                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', docData.id);
+                        batch.update(docRef, {
+                            currentPrice: price,
+                            dailyChangePercent: changePercent,
+                            lastUpdateTimestamp: now
+                        });
+                    });
+                    successCount++;
+                };
+
+                // 開始執行批次查詢
+                for (const chunk of chunks) {
+                    // 建構批次查詢字串: tse_1101.tw|otc_1101.tw|...
+                    // 同時查詢上市(tse)與上櫃(otc)以確保命中
+                    const query = chunk.map(s => `tse_${s}.tw|otc_${s}.tw`).join('|');
+                    const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
+                    
+                    let chunkSuccess = false;
+                    try {
+                        const data = await fetchWithDualProxy(twseUrl);
+                        if (data && data.msgArray) {
+                             chunkSuccess = true;
+                             
+                             // 處理這一批回傳的資料
+                             // 建立一個 Set 來記錄這一批成功更新的股票
+                             const updatedInChunk = new Set();
+
+                             data.msgArray.forEach(result => {
+                                 const symbol = result.c; // 股票代號
+                                 if (chunk.includes(symbol)) {
+                                     // 解析價格 (與單一查詢邏輯相同)
+                                     let price = parseFloat(result.z);
+                                     if (isNaN(price)) price = parseFloat(result.b?.split('_')[0]);
+                                     if (isNaN(price)) price = parseFloat(result.a?.split('_')[0]);
+                                     if (isNaN(price)) price = parseFloat(result.y);
+                                     
+                                     const yesterday = parseFloat(result.y);
+                                     const changePercent = yesterday ? ((price - yesterday) / yesterday) * 100 : 0;
+                                     
+                                     if (!isNaN(price)) {
+                                        stageStockUpdate(symbol, price, changePercent);
+                                        updatedInChunk.add(symbol);
+                                     }
+                                 }
+                             });
+
+                             // 3. 針對批次查詢中「失敗/未回傳」的股票，改用單一查詢 (例如 Yahoo) 補救
+                             const missingSymbols = chunk.filter(s => !updatedInChunk.has(s));
+                             if (missingSymbols.length > 0) {
+                                 console.log("Fallback fetching for:", missingSymbols);
+                                 // 平行處理補救查詢
+                                 await Promise.all(missingSymbols.map(async (symbol) => {
+                                     const stockData = await fetchStockData(symbol); // 使用原本包含 Yahoo 的查詢函式
+                                     if (stockData) {
+                                         stageStockUpdate(symbol, stockData.price, stockData.changePercent);
+                                     }
+                                 }));
+                             }
+                        }
+                    } catch (e) {
+                        console.warn("Batch fetch failed, switching to sequential fallback", e);
+                        chunkSuccess = false;
+                    }
+
+                    // 如果整批失敗 (例如 API 格式改變)，則對該批次所有股票進行逐一查詢
+                    if (!chunkSuccess) {
+                         for (const symbol of chunk) {
+                             const data = await fetchStockData(symbol);
+                             if (data) stageStockUpdate(symbol, data.price, data.changePercent);
+                             await new Promise(r => setTimeout(r, 100)); // 輕微延遲避免被鎖
+                         }
+                    } else {
+                        // 批次成功後，稍微休息一下再發下一批，避免對 Proxy 造成壓力
+                        await new Promise(r => setTimeout(r, 300));
+                    }
+                }
+
+                if (successCount > 0) {
+                    await batch.commit();
+                    setPriceUpdateMsg(`更新完成：成功更新 ${successCount} 檔現有持股`);
+                    setLastUpdateTime(new Date());
+                } else {
+                    setPriceUpdateMsg("更新失敗或無資料變動");
+                }
+
+            } catch (e) {
+                console.error("Update error", e);
+                setPriceUpdateMsg("更新過程發生錯誤");
+            } finally {
+                setUpdatingPrices(false);
+                setTimeout(() => setPriceUpdateMsg(""), 5000);
             }
-            setUpdatingPrices(false);
-            setTimeout(() => setPriceUpdateMsg(""), 5000);
           };
 
           const handleAddMember = async () => {
