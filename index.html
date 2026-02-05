@@ -68,7 +68,7 @@
         import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
         import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid, Area, AreaChart } from 'recharts';
-        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2, ChevronRight, XCircle, UserPlus, AlertTriangle, Download, FileJson, Copy, LockOpen } from 'lucide-react';
+        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2, ChevronRight, XCircle, UserPlus, AlertTriangle, Download, FileJson, Copy, LockOpen, Delete } from 'lucide-react';
 
         // Firebase (保持 CDN 連結)
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
@@ -944,13 +944,17 @@
 
           // --- Chart Data Preparation (RESTORED) ---
           const allocationData = useMemo(() => {
-             const data = {};
-             aggregatedHoldings.forEach(h => {
-                if (h.marketValue > 0) {
-                   data[h.memberName] = (data[h.memberName] || 0) + h.marketValue;
-                }
-             });
-            return Object.entries(data).map(([name, value]) => ({ name, value }));
+             return members.map((member, index) => {
+                 const memberValue = aggregatedHoldings
+                    .filter(h => h.memberId === member.id)
+                    .reduce((sum, h) => sum + h.marketValue, 0);
+                 
+                 return {
+                     name: member.name,
+                     value: memberValue,
+                     color: COLORS[index % COLORS.length] // Bind color to member index
+                 };
+             }).filter(item => item.value > 0);
           }, [aggregatedHoldings, members]);
 
           // --- Helpers & APIs ---
@@ -973,7 +977,11 @@
 
           const fetchStockData = async (code, type) => {
             if (!code) return null;
+            // Force uppercase for consistent API querying
             const uCode = code.trim().toUpperCase(); 
+            
+            // 1. Try TWSE MIS First (Priority: Chinese Names & Official Data)
+            // Queries both TSE (Listed) and OTC (Over-the-counter)
             const query = `tse_${uCode}.tw|otc_${uCode}.tw`;
             const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
             
@@ -985,7 +993,7 @@
                   let price = parseFloat(result.z);
                   if (isNaN(price)) price = parseFloat(result.b?.split('_')[0]);
                   if (isNaN(price)) price = parseFloat(result.a?.split('_')[0]);
-                  if (isNaN(price)) price = parseFloat(result.y);
+                  if (isNaN(price)) price = parseFloat(result.y); // Yesterday's closing if no trade
                   
                   const yesterday = parseFloat(result.y);
                   const change = price - yesterday;
@@ -995,7 +1003,7 @@
                     price: price,
                     change: change,
                     changePercent: changePercent,
-                    name: result.n,
+                    name: result.n, // Returns the Chinese name (e.g., 元大台灣50正2)
                     source: 'TWSE'
                   };
                 }
@@ -1003,6 +1011,7 @@
                 console.warn("TWSE fetch failed, failing over to Yahoo...", e);
             }
 
+            // 2. Fallback to Yahoo Finance (Reliable Price, but Name might be English/Code)
             const yahooSymbol = `${uCode}.TW`; 
             const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
             try {
@@ -1013,7 +1022,7 @@
                     price: meta.regularMarketPrice,
                     change: meta.regularMarketPrice - meta.chartPreviousClose,
                     changePercent: ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100,
-                    name: uCode, 
+                    name: uCode, // Fallback to code if name unavailable
                     source: 'Yahoo'
                   };
                }
@@ -1026,9 +1035,12 @@
              let sym = holdingForm.symbol;
              if (!sym || sym.trim() === '') return;
              
+             // Auto-convert to uppercase for UX consistency
              const uCode = sym.trim().toUpperCase();
+             // Check LOCAL DICTIONARY first
              const localName = STOCK_DICTIONARY[uCode];
              
+             // 1. Instant local update if available
              if (localName) {
                  setHoldingForm(prev => ({ ...prev, symbol: uCode, name: localName }));
              } else {
@@ -1042,7 +1054,9 @@
                     setHoldingForm(prev => ({
                         ...prev,
                         symbol: uCode,
+                        // Prefer local name if exists (custom names), otherwise use API name
                         name: localName || quote.name || prev.name,
+                        // Price NOT set here, preserving user input or empty
                     }));
                 }
              } catch (e) {
@@ -1058,7 +1072,7 @@
 
           const handleSymbolKeyDown = (e) => {
               if (e.key === 'Enter') {
-                  e.preventDefault(); 
+                  e.preventDefault(); // Prevent accidental form submit if wrapped
                   performSymbolSearch();
               }
           };
@@ -1218,8 +1232,10 @@
           const handleSaveHolding = async () => {
              if (!user) return;
              
+             // Extract ID to prevent saving it into the document data
              const { shares, price, fee, type, id, ...restForm } = holdingForm; 
              
+             // 1. Validation
              if (!shares || !price || isNaN(parseFloat(shares)) || isNaN(parseFloat(price))) {
                  alert("請輸入有效的股數與價格");
                  return;
@@ -1232,6 +1248,7 @@
              const cost = type === 'buy' ? (numPrice) + (numFee / numShares) : (numPrice) - (numFee / numShares); 
              const signedShares = type === 'buy' ? numShares : -numShares;
 
+             // 2. Construct Payload (Ensure no undefined)
              const payload = {
                 ...restForm, 
                 shares: signedShares,
@@ -1241,6 +1258,7 @@
                 lastUpdateTimestamp: Math.floor(Date.now() / 1000)
              };
              
+             // Remove any undefined keys to prevent Firestore errors
              Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
 
              try {
@@ -1309,11 +1327,13 @@
               setStoredPin(newPin);
               setHasPin(true);
               setNewPin("");
+              // Setting a new PIN automatically authenticates
               setIsAuthenticated(true); 
               alert("安全密碼設定成功！");
             } catch (e) { console.error(e); }
           };
 
+          // --- Settings Data Management Handlers ---
           const handleExportData = async () => {
             if(!user) return;
             try {
@@ -1568,7 +1588,7 @@
                                    <ResponsiveContainer width="100%" height={120}>
                                      <PieChart>
                                        <Pie data={allocationData} innerRadius={35} outerRadius={55} paddingAngle={5} dataKey="value">
-                                         {allocationData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                                         {allocationData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
                                        </Pie>
                                        <RechartsTooltip formatter={(val) => formatCurrency(val)} />
                                      </PieChart>
