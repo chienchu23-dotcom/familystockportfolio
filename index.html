@@ -423,7 +423,7 @@
             <div className="flex flex-col items-center gap-4">
                {/* Dots Display */}
                <div className="flex gap-4 mb-2">
-                 {[...Array(6)].map((_, i) => (
+                 {[...Array(4)].map((_, i) => (
                    <div key={i} className={`w-4 h-4 rounded-full border-2 border-slate-300 ${i < value.length ? 'bg-slate-800 border-slate-800' : 'bg-transparent'}`}></div>
                  ))}
                </div>
@@ -822,7 +822,7 @@
           };
           
           const handlePadInput = (num) => {
-             if (pinInput.length < 6) {
+             if (pinInput.length < 4) {
                  setPinInput(prev => prev + num);
              }
           };
@@ -837,7 +837,7 @@
 
           // Auto-submit pin
           useEffect(() => {
-             if (showUnlockModal && pinInput.length === 6) {
+             if (showUnlockModal && pinInput.length === 4) {
                  // Small delay for UX
                  setTimeout(() => handleUnlock(), 100);
              }
@@ -1972,7 +1972,7 @@
                              </div>
                           ) : (
                              <div className="space-y-3">
-                                <Input label="設定新的 PIN 碼" type="password" placeholder="4-6 位數字" value={newPin} onChange={e => setNewPin(e.target.value)} maxLength={6} />
+                                <Input label="設定新的 PIN 碼" type="password" placeholder="4 位數字" value={newPin} onChange={e => setNewPin(e.target.value)} maxLength={4} />
                                 <Button onClick={handleSetPin} className="w-full">啟用保護</Button>
                              </div>
                           )}
