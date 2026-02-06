@@ -878,6 +878,18 @@
             }).filter(g => g.shares > 0 || g.realizedProfit !== 0);
           }, [holdings, members]);
 
+          // --- Calculate Total Daily Profit (New!) ---
+          const totalDailyProfit = useMemo(() => {
+            return aggregatedHoldings.reduce((sum, h) => {
+                const change = h.dailyChangePercent || 0;
+                const marketVal = h.marketValue || 0;
+                if (marketVal === 0 || change === 0) return sum;
+                // 公式：今日損益 = 市值 - (市值 / (1 + 漲跌幅%))
+                const prevVal = marketVal / (1 + change / 100);
+                return sum + (marketVal - prevVal);
+            }, 0);
+          }, [aggregatedHoldings]);
+
           // --- Trend Data Calculation ---
           const trendData = useMemo(() => {
             const months = Array.from({ length: 12 }, (_, i) => i + 1);
@@ -1562,9 +1574,21 @@
                           <div><p className="text-blue-100 text-sm font-medium mb-1">總資產市值</p><h2 className="text-3xl font-bold tracking-tight">{formatCurrency(aggregatedHoldings.reduce((sum, h) => sum + h.marketValue, 0))}</h2></div>
                           <div className="bg-white/20 p-2 rounded-lg backdrop-blur-sm"><DollarSign size={24} className="text-white"/></div>
                         </div>
-                        <div className="flex gap-4 text-sm text-blue-100">
-                           <div><span className="opacity-70">投入成本</span> <span className="font-semibold">{formatNumber(aggregatedHoldings.reduce((sum, h) => sum + h.totalCost, 0))}</span></div>
-                           <div><span className="opacity-70">未實現損益</span> <span className="font-semibold">{formatNumber(aggregatedHoldings.reduce((sum, h) => sum + h.unrealizedProfit, 0))}</span></div>
+                        <div className="grid grid-cols-3 gap-2 text-sm text-blue-100">
+                           <div className="flex flex-col">
+                               <span className="opacity-70 text-xs mb-1">投入成本</span> 
+                               <span className="font-bold text-base">{formatNumber(aggregatedHoldings.reduce((sum, h) => sum + h.totalCost, 0))}</span>
+                           </div>
+                           <div className="flex flex-col">
+                               <span className="opacity-70 text-xs mb-1">未實現損益</span> 
+                               <span className="font-bold text-base">{formatNumber(aggregatedHoldings.reduce((sum, h) => sum + h.unrealizedProfit, 0))}</span>
+                           </div>
+                           <div className="flex flex-col">
+                               <span className="opacity-70 text-xs mb-1">當日損益</span> 
+                               <span className={`font-bold text-base ${totalDailyProfit >= 0 ? 'text-red-300' : 'text-emerald-300'}`}>
+                                   {totalDailyProfit > 0 ? '+' : ''}{formatNumber(Math.round(totalDailyProfit))}
+                               </span>
+                           </div>
                         </div>
                       </Card>
 
