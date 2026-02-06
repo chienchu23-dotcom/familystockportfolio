@@ -57,6 +57,12 @@
         text-align: center;
         pointer-events: none;
       }
+      
+      /* Keypad Button Active State */
+      .keypad-btn:active {
+        transform: scale(0.95);
+        background-color: #e2e8f0;
+      }
     </style>
 </head>
 <body>
@@ -92,7 +98,6 @@
         const appId = "github-web-version";
 
         // --- 內建股票代號字典 (Mini Database) ---
-        // 擴充包含完整上市櫃股票與 ETF 清單
         const STOCK_DICTIONARY = {
             // --- ETF ---
             '0050': '元大台灣50',
@@ -410,6 +415,31 @@
             />
           </div>
         );
+
+        // --- Pin Pad Component ---
+        const PinKeypad = ({ onInput, onDelete, onClear, value }) => {
+          const nums = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+          return (
+            <div className="flex flex-col items-center gap-4">
+               {/* Dots Display */}
+               <div className="flex gap-4 mb-2">
+                 {[...Array(6)].map((_, i) => (
+                   <div key={i} className={`w-4 h-4 rounded-full border-2 border-slate-300 ${i < value.length ? 'bg-slate-800 border-slate-800' : 'bg-transparent'}`}></div>
+                 ))}
+               </div>
+               
+               {/* Keypad Grid */}
+               <div className="grid grid-cols-3 gap-3 w-full max-w-[280px]">
+                 {nums.map(n => (
+                   <button key={n} onClick={() => onInput(n)} className="h-16 rounded-full bg-slate-100 hover:bg-slate-200 text-xl font-bold text-slate-700 transition-colors keypad-btn">{n}</button>
+                 ))}
+                 <button onClick={onClear} className="h-16 rounded-full bg-slate-50 hover:bg-red-50 text-red-500 font-medium text-sm transition-colors keypad-btn">清除</button>
+                 <button onClick={() => onInput(0)} className="h-16 rounded-full bg-slate-100 hover:bg-slate-200 text-xl font-bold text-slate-700 transition-colors keypad-btn">0</button>
+                 <button onClick={onDelete} className="h-16 rounded-full bg-slate-50 hover:bg-slate-200 text-slate-600 transition-colors flex items-center justify-center keypad-btn"><Delete size={24}/></button>
+               </div>
+            </div>
+          )
+        }
 
         const Modal = ({ isOpen, onClose, title, children, className = "max-w-md" }) => {
           if (!isOpen) return null;
@@ -787,8 +817,31 @@
                 }
             } else {
                 alert("密碼錯誤，請重試");
+                setPinInput(""); // Clear on error
             }
           };
+          
+          const handlePadInput = (num) => {
+             if (pinInput.length < 6) {
+                 setPinInput(prev => prev + num);
+             }
+          };
+
+          const handlePadDelete = () => {
+             setPinInput(prev => prev.slice(0, -1));
+          };
+          
+          const handlePadClear = () => {
+             setPinInput("");
+          };
+
+          // Auto-submit pin
+          useEffect(() => {
+             if (showUnlockModal && pinInput.length === 6) {
+                 // Small delay for UX
+                 setTimeout(() => handleUnlock(), 100);
+             }
+          }, [pinInput, showUnlockModal]);
 
           const handleToggleLock = () => {
               if (isAuthenticated && hasPin) {
@@ -888,6 +941,11 @@
                 const prevVal = marketVal / (1 + change / 100);
                 return sum + (marketVal - prevVal);
             }, 0);
+          }, [aggregatedHoldings]);
+          
+          // --- Total Asset Value ---
+          const totalAssetValue = useMemo(() => {
+              return aggregatedHoldings.reduce((sum, h) => sum + h.marketValue, 0);
           }, [aggregatedHoldings]);
 
           // --- Trend Data Calculation ---
@@ -1066,9 +1124,7 @@
                     setHoldingForm(prev => ({
                         ...prev,
                         symbol: uCode,
-                        // Prefer local name if exists (custom names), otherwise use API name
                         name: localName || quote.name || prev.name,
-                        // Price NOT set here, preserving user input or empty
                     }));
                 }
              } catch (e) {
@@ -1621,19 +1677,27 @@
                              </div>
                              {/* Interactive Member List */}
                              <div className="flex flex-col justify-center gap-1.5 w-1/2">
-                                {members.map((m, i) => (
-                                    <button 
-                                        key={m.id} 
-                                        onClick={() => setSelectedMember(m)}
-                                        className="flex items-center justify-between text-xs p-1.5 hover:bg-slate-50 rounded-lg group transition-colors text-left"
-                                    >
-                                        <div className="flex items-center gap-2">
-                                            <div className="w-2 h-2 rounded-full" style={{background: COLORS[i % COLORS.length]}}></div>
-                                            <span className="text-slate-700 font-medium">{m.name}</span>
-                                        </div>
-                                        <ChevronRight size={14} className="text-slate-300 group-hover:text-blue-500"/>
-                                    </button>
-                                ))}
+                                {members.map((m, i) => {
+                                    const mData = allocationData.find(d => d.name === m.name);
+                                    const val = mData ? mData.value : 0;
+                                    const percent = totalAssetValue > 0 ? ((val / totalAssetValue) * 100).toFixed(1) : "0.0";
+                                    return (
+                                        <button 
+                                            key={m.id} 
+                                            onClick={() => setSelectedMember(m)}
+                                            className="flex items-center justify-between text-xs p-1.5 hover:bg-slate-50 rounded-lg group transition-colors text-left"
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <div className="w-2 h-2 rounded-full" style={{background: COLORS[i % COLORS.length]}}></div>
+                                                <span className="text-slate-700 font-medium">{m.name}</span>
+                                            </div>
+                                            <div className="flex items-center gap-1">
+                                                <span className="text-xs text-slate-400 font-medium">{percent}%</span>
+                                                <ChevronRight size={14} className="text-slate-300 group-hover:text-blue-500"/>
+                                            </div>
+                                        </button>
+                                    );
+                                })}
                              </div>
                          </div>
                       </Card>
@@ -1838,11 +1902,20 @@
 
               {/* Unlock Modal (New!) */}
               <Modal isOpen={showUnlockModal} onClose={() => setShowUnlockModal(false)} title="安全驗證">
-                 <div className="space-y-4 text-center">
-                    <div className="bg-blue-100 p-3 rounded-full inline-block"><Lock size={24} className="text-blue-600" /></div>
-                    <p className="text-slate-600">請輸入 PIN 碼以執行此操作</p>
-                    <input type="password" value={pinInput} onChange={(e) => setPinInput(e.target.value)} className="w-full px-4 py-3 text-center text-lg tracking-widest bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="****" maxLength={6} />
-                    <Button onClick={handleUnlock} className="w-full">驗證</Button>
+                 <div className="space-y-6 flex flex-col items-center">
+                    <div className="bg-blue-100 p-4 rounded-full"><Lock size={32} className="text-blue-600" /></div>
+                    <div className="text-center">
+                        <h3 className="font-bold text-slate-800 text-lg">請輸入密碼</h3>
+                        <p className="text-slate-500 text-sm mt-1">驗證身分以進行編輯</p>
+                    </div>
+                    
+                    {/* Custom Pin Keypad */}
+                    <PinKeypad 
+                        value={pinInput} 
+                        onInput={handlePadInput} 
+                        onDelete={handlePadDelete} 
+                        onClear={handlePadClear} 
+                    />
                  </div>
               </Modal>
 
