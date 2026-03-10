@@ -151,22 +151,22 @@
         const PinKeypad = ({ onInput, onDelete, onClear, value }) => {
           const nums = [1, 2, 3, 4, 5, 6, 7, 8, 9];
           return (
-            <div className="flex flex-col items-center gap-6"> {/* Increased container gap */}
+            <div className="flex flex-col items-center gap-4">
                {/* Dots Display */}
-               <div className="flex gap-6 mb-4"> {/* Increased dots gap and margin */}
+               <div className="flex gap-4 mb-2">
                  {[...Array(4)].map((_, i) => (
-                   <div key={i} className={`w-5 h-5 rounded-full border-2 border-slate-300 ${i < value.length ? 'bg-slate-800 border-slate-800' : 'bg-transparent'}`}></div>
+                   <div key={i} className={`w-4 h-4 rounded-full border-2 border-slate-300 ${i < value.length ? 'bg-slate-800 border-slate-800' : 'bg-transparent'}`}></div>
                  ))}
                </div>
                
                {/* Keypad Grid */}
-               <div className="grid grid-cols-3 gap-5 w-full max-w-[340px]"> {/* Increased width and gap */}
+               <div className="grid grid-cols-3 gap-4 w-full max-w-[260px]">
                  {nums.map(n => (
-                   <button key={n} onClick={() => onInput(n)} className="h-20 rounded-full bg-slate-100 hover:bg-slate-200 text-3xl font-bold text-slate-700 transition-colors keypad-btn shadow-sm">{n}</button>
+                   <button key={n} onClick={() => onInput(n)} className="h-16 rounded-full bg-slate-100 hover:bg-slate-200 text-2xl font-bold text-slate-700 transition-colors keypad-btn shadow-sm">{n}</button>
                  ))}
-                 <button onClick={onClear} className="h-20 rounded-full bg-slate-50 hover:bg-red-50 text-red-500 font-bold text-lg transition-colors keypad-btn shadow-sm">清除</button>
-                 <button onClick={() => onInput(0)} className="h-20 rounded-full bg-slate-100 hover:bg-slate-200 text-3xl font-bold text-slate-700 transition-colors keypad-btn shadow-sm">0</button>
-                 <button onClick={onDelete} className="h-20 rounded-full bg-slate-50 hover:bg-slate-200 text-slate-600 transition-colors flex items-center justify-center keypad-btn shadow-sm"><Delete size={32}/></button>
+                 <button onClick={onClear} className="h-16 rounded-full bg-slate-50 hover:bg-red-50 text-red-500 font-bold text-base transition-colors keypad-btn shadow-sm">清除</button>
+                 <button onClick={() => onInput(0)} className="h-16 rounded-full bg-slate-100 hover:bg-slate-200 text-2xl font-bold text-slate-700 transition-colors keypad-btn shadow-sm">0</button>
+                 <button onClick={onDelete} className="h-16 rounded-full bg-slate-50 hover:bg-slate-200 text-slate-600 transition-colors flex items-center justify-center keypad-btn shadow-sm"><Delete size={24}/></button>
                </div>
             </div>
           )
@@ -500,6 +500,7 @@
           const [activeYear, setActiveYear] = useState(currentYear);
           const [activeMonth, setActiveMonth] = useState('all');
           const [availableYears, setAvailableYears] = useState([currentYear]);
+          const [mainTimeRange, setMainTimeRange] = useState('1Y'); // <-- 新增主畫面趨勢圖的時間區間狀態
 
           // View Mode & Filtering
           const [holdingViewMode, setHoldingViewMode] = useState('summary');
@@ -748,24 +749,41 @@
             }, 0);
           }, [aggregatedHoldings]);
           
-          // --- Total Asset Value ---
+          // --- Total Asset Value & Profits ---
           const totalAssetValue = useMemo(() => {
               return aggregatedHoldings.reduce((sum, h) => sum + h.marketValue, 0);
           }, [aggregatedHoldings]);
+
+          const totalCost = useMemo(() => {
+              return aggregatedHoldings.reduce((sum, h) => sum + h.totalCost, 0);
+          }, [aggregatedHoldings]);
+
+          const totalUnrealizedProfit = useMemo(() => {
+              return aggregatedHoldings.reduce((sum, h) => sum + h.unrealizedProfit, 0);
+          }, [aggregatedHoldings]);
+
+          const totalProfitPercentage = totalCost > 0 ? (totalUnrealizedProfit / totalCost) * 100 : 0;
 
           // --- Trend Data Calculation ---
           const trendData = useMemo(() => {
             if (members.length === 0) return [];
 
             const year = parseInt(activeYear);
-            const startDate = new Date(year, 0, 1);
             const today = new Date();
             // If active year is current year, end at today, else end of year
             const endDate = (year === today.getFullYear()) ? today : new Date(year, 11, 31);
-            
-            // Normalize dates to midnight
-            startDate.setHours(0,0,0,0);
             endDate.setHours(23,59,59,999);
+
+            // Calculate start date based on selected time range
+            const startDate = new Date(endDate);
+            switch(mainTimeRange) {
+                case '1M': startDate.setMonth(endDate.getMonth() - 1); break;
+                case '3M': startDate.setMonth(endDate.getMonth() - 3); break;
+                case '6M': startDate.setMonth(endDate.getMonth() - 6); break;
+                case '1Y': startDate.setFullYear(year, 0, 1); break; // 1Y means from Jan 1st of the active year
+                default: startDate.setFullYear(year, 0, 1);
+            }
+            startDate.setHours(0,0,0,0);
 
             // Price Map
             const priceMap = {};
@@ -797,7 +815,7 @@
                 }
             }
 
-            // 2. Iterate through each day of the active year
+            // 2. Iterate through each day of the active date range
             const data = [];
             // Loop day by day
             for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
@@ -853,7 +871,7 @@
             }
             
             return data;
-          }, [allHoldings, activeYear, members]);
+          }, [allHoldings, activeYear, members, mainTimeRange]);
 
           // --- Chart Data Preparation (RESTORED) ---
           const allocationData = useMemo(() => {
@@ -1222,7 +1240,13 @@
               const p = parseFloat(holdingForm.price) || 0;
               const s = parseFloat(holdingForm.shares) || 0;
               const f = parseFloat(holdingForm.fee) || 0;
-              if (holdingForm.type === 'buy') { return p * s + f; } else { return p * s - f; }
+              let estimate = 0;
+              if (holdingForm.type === 'buy') { 
+                  estimate = p * s + f; 
+              } else { 
+                  estimate = p * s - f; 
+              }
+              return Math.ceil(estimate); // 無條件進位到個位數
           };
           
           const handleDrillDown = (memberId, symbol) => {
@@ -1470,17 +1494,25 @@
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <Card className="p-5 bg-gradient-to-br from-blue-600 to-blue-700 text-white border-none shadow-lg shadow-blue-200">
                         <div className="flex justify-between items-start mb-4">
-                          <div><p className="text-blue-100 text-sm font-medium mb-1">總資產市值</p><h2 className="text-3xl font-bold tracking-tight">{formatCurrency(aggregatedHoldings.reduce((sum, h) => sum + h.marketValue, 0))}</h2></div>
+                          <div>
+                              <p className="text-blue-100 text-sm font-medium mb-1">總資產市值</p>
+                              <div className="flex items-baseline gap-2">
+                                  <h2 className="text-3xl font-bold tracking-tight">{formatCurrency(totalAssetValue)}</h2>
+                                  <span className={`text-sm font-bold px-2 py-0.5 rounded-full ${totalProfitPercentage >= 0 ? 'bg-red-500/30 text-red-100' : 'bg-emerald-500/30 text-emerald-100'}`}>
+                                      {totalProfitPercentage > 0 ? '+' : ''}{totalProfitPercentage.toFixed(2)}%
+                                  </span>
+                              </div>
+                          </div>
                           <div className="bg-white/20 p-2 rounded-lg backdrop-blur-sm"><DollarSign size={24} className="text-white"/></div>
                         </div>
                         <div className="grid grid-cols-3 gap-2 text-sm text-blue-100">
                            <div className="flex flex-col">
                                <span className="opacity-70 text-xs mb-1">投入成本</span> 
-                               <span className="font-bold text-base">{formatNumber(aggregatedHoldings.reduce((sum, h) => sum + h.totalCost, 0))}</span>
+                               <span className="font-bold text-base">{formatNumber(Math.round(totalCost))}</span>
                            </div>
                            <div className="flex flex-col">
                                <span className="opacity-70 text-xs mb-1">未實現損益</span> 
-                               <span className="font-bold text-base">{formatNumber(aggregatedHoldings.reduce((sum, h) => sum + h.unrealizedProfit, 0))}</span>
+                               <span className="font-bold text-base">{formatNumber(Math.round(totalUnrealizedProfit))}</span>
                            </div>
                            <div className="flex flex-col">
                                <span className="opacity-70 text-xs mb-1">當日損益</span> 
@@ -1548,7 +1580,24 @@
 
                     {/* Chart Section */}
                     <Card className="p-6">
-                      <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Activity size={20} className="text-blue-500"/>{activeYear} 年度資產趨勢 (堆疊圖)</h3>
+                      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-4 gap-2">
+                          <h3 className="font-bold text-slate-800 flex items-center gap-2"><Activity size={20} className="text-blue-500"/>資產趨勢圖 (堆疊)</h3>
+                          <div className="flex gap-1 p-1 bg-slate-100 rounded-full self-start sm:self-auto">
+                              {['1M', '3M', '6M', '1Y'].map(range => (
+                                  <button 
+                                      key={range}
+                                      onClick={() => setMainTimeRange(range)}
+                                      className={`px-3 py-1 text-xs font-bold rounded-full transition-all duration-300 ${
+                                          mainTimeRange === range 
+                                          ? 'bg-blue-500 text-white shadow-md transform scale-105' 
+                                          : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200'
+                                      }`}
+                                  >
+                                      {range === '1Y' ? '1年' : range.replace('M', '月')}
+                                  </button>
+                              ))}
+                          </div>
+                      </div>
                       <div className="h-72 w-full text-xs">
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={trendData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
