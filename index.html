@@ -98,7 +98,6 @@
         const appId = "github-web-version";
 
         // --- 內建股票代號字典 (Mini Database) ---
-        // 擴充包含完整上市櫃股票與 ETF 清單
         const STOCK_DICTIONARY = {
             // --- ETF ---
             '0050': '元大台灣50',
@@ -480,8 +479,111 @@
             return value;
         };
 
+        // --- 代理與 API 獲取工具 ---
+        const fetchWithDualProxy = async (targetUrl) => {
+            const encodedUrl = encodeURIComponent(targetUrl);
+            const timestamp = Date.now();
+            try {
+              const response1 = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${timestamp}`);
+              if (response1.ok) {
+                const data = await response1.json();
+                if (data.contents) return JSON.parse(data.contents);
+              }
+            } catch (e) {}
+            try {
+               const response2 = await fetch(`https://corsproxy.io/?${encodedUrl}`);
+               if (response2.ok) return await response2.json();
+            } catch (e) { return null; }
+            return null;
+        };
+
+        const fetchStockData = async (code, type) => {
+            if (!code) return null;
+            // Force uppercase for consistent API querying
+            const uCode = code.trim().toUpperCase(); 
+            
+            // 1. Try TWSE MIS First (Priority: Chinese Names & Official Data)
+            const query = `tse_${uCode}.tw|otc_${uCode}.tw`;
+            const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
+            
+            try {
+                const data = await fetchWithDualProxy(twseUrl);
+                const result = data?.msgArray?.find(item => item.c === uCode);
+                
+                if (result) {
+                  let price = parseFloat(result.z);
+                  if (isNaN(price)) price = parseFloat(result.b?.split('_')[0]);
+                  if (isNaN(price)) price = parseFloat(result.a?.split('_')[0]);
+                  if (isNaN(price)) price = parseFloat(result.y); // Yesterday's closing if no trade
+                  
+                  const yesterday = parseFloat(result.y);
+                  const change = price - yesterday;
+                  const changePercent = (change / yesterday) * 100;
+                  
+                  return {
+                    price: price,
+                    change: change,
+                    changePercent: changePercent,
+                    name: result.n, // Returns the Chinese name
+                    source: 'TWSE'
+                  };
+                }
+            } catch (e) {
+                console.warn("TWSE fetch failed, failing over to Yahoo...", e);
+            }
+
+            // 2. Fallback to Yahoo Finance (Reliable Price, but Name might be English/Code)
+            const yahooSymbol = `${uCode}.TW`; 
+            const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
+            try {
+               const data = await fetchWithDualProxy(yahooUrl);
+               if (data && data.chart && data.chart.result) {
+                  const meta = data.chart.result[0].meta;
+                  return {
+                    price: meta.regularMarketPrice,
+                    change: meta.regularMarketPrice - meta.chartPreviousClose,
+                    changePercent: ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100,
+                    name: uCode, // Fallback to code if name unavailable
+                    source: 'Yahoo'
+                  };
+               }
+            } catch (e) {}
+
+            return null; 
+        };
+
+        const fetchHistoryForSymbol = async (symbol) => {
+            const uCode = symbol.trim().toUpperCase(); 
+            // Query 5 years to cover long views
+            let url = `https://query1.finance.yahoo.com/v8/finance/chart/${uCode}.TW?range=5y&interval=1d`;
+            let data = await fetchWithDualProxy(url);
+            
+            if (!data?.chart?.result) {
+                // Fallback to OTC
+                url = `https://query1.finance.yahoo.com/v8/finance/chart/${uCode}.TWO?range=5y&interval=1d`;
+                data = await fetchWithDualProxy(url);
+            }
+            
+            if (data?.chart?.result?.[0]) {
+                const result = data.chart.result[0];
+                const timestamps = result.timestamp || [];
+                const closes = result.indicators?.quote?.[0]?.close || [];
+                const historyMap = {};
+                
+                timestamps.forEach((ts, idx) => {
+                    if (closes[idx] !== null && closes[idx] !== undefined) {
+                        const date = new Date(ts * 1000);
+                        const dateStr = date.toISOString().split('T')[0];
+                        historyMap[dateStr] = closes[idx];
+                    }
+                });
+                return historyMap;
+            }
+            return null;
+        };
+
         // --- 成員詳細分析視窗元件 ---
-        const MemberDetailModal = ({ isOpen, onClose, member, allHoldings, year }) => {
+        const MemberDetailModal = ({ isOpen, onClose, member, allHoldings, year, historicalPrices }) => {
             const [timeRange, setTimeRange] = useState('1Y'); // 1M, 3M, 6M, 1Y
             
             // Hook 1: memberHoldings
@@ -507,7 +609,7 @@
                 return { items: result, totalValue: totalVal };
             }, [member, allHoldings]);
 
-            // Hook 2: memberTrend (Daily Data)
+            // Hook 2: memberTrend (Daily Data using Historical Prices)
             const memberTrend = useMemo(() => {
                 if (!member) return [];
                 
@@ -577,7 +679,19 @@
                     let dailyValue = 0;
                     Object.entries(currentHoldings).forEach(([sym, shares]) => {
                         if (shares > 0) {
-                            const price = priceMap[sym] || 0;
+                            let price = priceMap[sym] || 0;
+                            // Search back up to 7 days for the latest valid closing price
+                            if (historicalPrices && historicalPrices[sym]) {
+                                let tempDate = new Date(d);
+                                for(let i=0; i<7; i++) {
+                                    const tempStr = tempDate.toISOString().split('T')[0];
+                                    if (historicalPrices[sym][tempStr]) {
+                                        price = historicalPrices[sym][tempStr];
+                                        break;
+                                    }
+                                    tempDate.setDate(tempDate.getDate() - 1);
+                                }
+                            }
                             dailyValue += shares * price;
                         }
                     });
@@ -589,7 +703,7 @@
                 }
                 
                 return data;
-            }, [member, allHoldings, timeRange]);
+            }, [member, allHoldings, timeRange, historicalPrices]);
 
             // Hook 3: pieData 
             const pieData = useMemo(() => {
@@ -749,6 +863,10 @@
           const [allHoldings, setAllHoldings] = useState([]); 
           const [loading, setLoading] = useState(true);
 
+          // Historical Data State
+          const [historicalPrices, setHistoricalPrices] = useState({});
+          const [isFetchingHistory, setIsFetchingHistory] = useState(false);
+
           // Selection State for Modal
           const [selectedMember, setSelectedMember] = useState(null);
           const [deleteConfirm, setDeleteConfirm] = useState(null); 
@@ -770,7 +888,7 @@
           const [activeYear, setActiveYear] = useState(currentYear);
           const [activeMonth, setActiveMonth] = useState('all');
           const [availableYears, setAvailableYears] = useState([currentYear]);
-          const [mainTimeRange, setMainTimeRange] = useState('1Y'); // <-- 新增主畫面趨勢圖的時間區間狀態
+          const [mainTimeRange, setMainTimeRange] = useState('1Y'); // <-- 主畫面趨勢圖的時間區間狀態
 
           // View Mode & Filtering
           const [holdingViewMode, setHoldingViewMode] = useState('summary');
@@ -870,6 +988,44 @@
             });
             return () => { unsubMembers(); unsubHoldings(); };
           }, [user]);
+
+          // --- Fetch Historical Data Background Process ---
+          useEffect(() => {
+              if (allHoldings.length === 0) return;
+              
+              const uniqueSymbols = [...new Set(allHoldings.map(h => h.symbol))];
+              const symbolsToFetch = uniqueSymbols.filter(sym => historicalPrices[sym] === undefined);
+              
+              if (symbolsToFetch.length === 0) return;
+
+              let isMounted = true;
+
+              const loadHistory = async () => {
+                  setIsFetchingHistory(true);
+                  const newHistory = { ...historicalPrices };
+                  
+                  for (const sym of symbolsToFetch) {
+                      try {
+                          const historyMap = await fetchHistoryForSymbol(sym);
+                          if (isMounted) {
+                              newHistory[sym] = historyMap || {}; // Empty object if failed to prevent refetching
+                              setHistoricalPrices({ ...newHistory });
+                          }
+                      } catch (e) {
+                          if (isMounted) {
+                              newHistory[sym] = {};
+                              setHistoricalPrices({ ...newHistory });
+                          }
+                      }
+                      // Delay to respect API rate limits
+                      await new Promise(r => setTimeout(r, 400));
+                  }
+                  if (isMounted) setIsFetchingHistory(false);
+              };
+
+              loadHistory();
+              return () => { isMounted = false; };
+          }, [allHoldings, historicalPrices]);
 
           // --- Auth Logic ---
           const handleAuthRequired = (action) => {
@@ -1034,7 +1190,7 @@
 
           const totalProfitPercentage = totalCost > 0 ? (totalUnrealizedProfit / totalCost) * 100 : 0;
 
-          // --- Trend Data Calculation ---
+          // --- Trend Data Calculation (Daily Resolution w/ Historical Prices) ---
           const trendData = useMemo(() => {
             if (members.length === 0) return [];
 
@@ -1050,12 +1206,12 @@
                 case '1M': startDate.setMonth(endDate.getMonth() - 1); break;
                 case '3M': startDate.setMonth(endDate.getMonth() - 3); break;
                 case '6M': startDate.setMonth(endDate.getMonth() - 6); break;
-                case '1Y': startDate.setFullYear(year, 0, 1); break; // 1Y means from Jan 1st of the active year
+                case '1Y': startDate.setFullYear(year, 0, 1); break; 
                 default: startDate.setFullYear(year, 0, 1);
             }
             startDate.setHours(0,0,0,0);
 
-            // Price Map
+            // Base Price Map (Fallback to latest price)
             const priceMap = {};
             allHoldings.forEach(h => { if(h.currentPrice) priceMap[h.symbol] = h.currentPrice; });
 
@@ -1063,7 +1219,6 @@
             const sortedTxs = [...allHoldings].sort((a, b) => new Date(a.date) - new Date(b.date));
 
             // Initialize running portfolio for each member
-            // Structure: { memberId: { symbol: quantity } }
             const portfolios = {};
             members.forEach(m => portfolios[m.id] = {});
 
@@ -1103,7 +1258,7 @@
                          }
                          txIndex++;
                     } else if (new Date(tx.date) < d) {
-                         // Catch up if logic skipped (should rarely happen with sorted list)
+                         // Catch up if logic skipped 
                          const mId = tx.memberId;
                          const sym = tx.symbol;
                          const qty = parseFloat(tx.shares);
@@ -1116,7 +1271,7 @@
                     }
                 }
 
-                // Calculate value for this day
+                // Calculate value for this day using historical daily closing prices
                 const dataPoint = { date: dateStr };
                 let totalVal = 0;
 
@@ -1126,8 +1281,21 @@
                     if (mPortfolio) {
                         Object.entries(mPortfolio).forEach(([sym, qty]) => {
                             if (qty > 0) {
-                                // Use current price for valuation (simplified trend)
-                                const price = priceMap[sym] || 0; 
+                                // Baseline fallback: Latest known price
+                                let price = priceMap[sym] || 0; 
+                                
+                                // True historical: Search backwards up to 7 days to find the last closing price
+                                if (historicalPrices && historicalPrices[sym]) {
+                                    let tempDate = new Date(d);
+                                    for(let i=0; i<7; i++) {
+                                        const tempStr = tempDate.toISOString().split('T')[0];
+                                        if (historicalPrices[sym][tempStr]) {
+                                            price = historicalPrices[sym][tempStr];
+                                            break;
+                                        }
+                                        tempDate.setDate(tempDate.getDate() - 1);
+                                    }
+                                }
                                 memberVal += qty * price;
                             }
                         });
@@ -1136,12 +1304,11 @@
                     totalVal += memberVal;
                 });
                 
-                // Add data point if we have valid data or if it's within the valid range
                 data.push(dataPoint);
             }
             
             return data;
-          }, [allHoldings, activeYear, members, mainTimeRange]);
+          }, [allHoldings, activeYear, members, mainTimeRange, historicalPrices]);
 
           // --- Chart Data Preparation (RESTORED) ---
           const allocationData = useMemo(() => {
@@ -1157,80 +1324,6 @@
                  };
              }).filter(item => item.value > 0);
           }, [aggregatedHoldings, members]);
-
-          // --- Helpers & APIs ---
-          const fetchWithDualProxy = async (targetUrl) => {
-            const encodedUrl = encodeURIComponent(targetUrl);
-            const timestamp = Date.now();
-            try {
-              const response1 = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${timestamp}`);
-              if (response1.ok) {
-                const data = await response1.json();
-                if (data.contents) return JSON.parse(data.contents);
-              }
-            } catch (e) {}
-            try {
-               const response2 = await fetch(`https://corsproxy.io/?${encodedUrl}`);
-               if (response2.ok) return await response2.json();
-            } catch (e) { return null; }
-            return null;
-          };
-
-          const fetchStockData = async (code, type) => {
-            if (!code) return null;
-            // Force uppercase for consistent API querying
-            const uCode = code.trim().toUpperCase(); 
-            
-            // 1. Try TWSE MIS First (Priority: Chinese Names & Official Data)
-            // Queries both TSE (Listed) and OTC (Over-the-counter)
-            const query = `tse_${uCode}.tw|otc_${uCode}.tw`;
-            const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
-            
-            try {
-                const data = await fetchWithDualProxy(twseUrl);
-                const result = data?.msgArray?.find(item => item.c === uCode);
-                
-                if (result) {
-                  let price = parseFloat(result.z);
-                  if (isNaN(price)) price = parseFloat(result.b?.split('_')[0]);
-                  if (isNaN(price)) price = parseFloat(result.a?.split('_')[0]);
-                  if (isNaN(price)) price = parseFloat(result.y); // Yesterday's closing if no trade
-                  
-                  const yesterday = parseFloat(result.y);
-                  const change = price - yesterday;
-                  const changePercent = (change / yesterday) * 100;
-                  
-                  return {
-                    price: price,
-                    change: change,
-                    changePercent: changePercent,
-                    name: result.n, // Returns the Chinese name (e.g., 元大台灣50正2)
-                    source: 'TWSE'
-                  };
-                }
-            } catch (e) {
-                console.warn("TWSE fetch failed, failing over to Yahoo...", e);
-            }
-
-            // 2. Fallback to Yahoo Finance (Reliable Price, but Name might be English/Code)
-            const yahooSymbol = `${uCode}.TW`; 
-            const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
-            try {
-               const data = await fetchWithDualProxy(yahooUrl);
-               if (data && data.chart && data.chart.result) {
-                  const meta = data.chart.result[0].meta;
-                  return {
-                    price: meta.regularMarketPrice,
-                    change: meta.regularMarketPrice - meta.chartPreviousClose,
-                    changePercent: ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100,
-                    name: uCode, // Fallback to code if name unavailable
-                    source: 'Yahoo'
-                  };
-               }
-            } catch (e) {}
-
-            return null; 
-          };
 
           const performSymbolSearch = async () => {
              let sym = holdingForm.symbol;
@@ -1853,7 +1946,11 @@
                     {/* Chart Section */}
                     <Card className="p-6">
                       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-4 gap-2">
-                          <h3 className="font-bold text-slate-800 flex items-center gap-2"><Activity size={20} className="text-blue-500"/>資產趨勢圖 (堆疊)</h3>
+                          <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                              <Activity size={20} className="text-blue-500"/>
+                              資產趨勢圖 (堆疊)
+                              {isFetchingHistory && <Loader2 size={14} className="animate-spin text-slate-400 ml-1" title="正在載入歷史股價..." />}
+                          </h3>
                           <div className="flex gap-1 p-1 bg-slate-100 rounded-full self-start sm:self-auto">
                               {['1M', '3M', '6M', '1Y'].map(range => (
                                   <button 
@@ -2135,6 +2232,7 @@
                 member={selectedMember}
                 allHoldings={allHoldings}
                 year={activeYear}
+                historicalPrices={historicalPrices}
               />
 
               {/* Unlock Modal (New!) */}
