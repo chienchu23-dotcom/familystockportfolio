@@ -302,15 +302,15 @@
             return null; 
         };
 
-        const fetchHistoryForSymbol = async (symbol) => {
+        const fetchHistoryForSymbol = async (symbol, range = '1mo') => {
             const uCode = symbol.trim().toUpperCase(); 
-            // Query 5 years to cover long views
-            let url = `https://query1.finance.yahoo.com/v8/finance/chart/${uCode}.TW?range=5y&interval=1d`;
+            // 根據傳入的 range 抓取資料 (預設 1mo 快速回補，或 5y 深度抓取)
+            let url = `https://query1.finance.yahoo.com/v8/finance/chart/${uCode}.TW?range=${range}&interval=1d`;
             let data = await fetchWithDualProxy(url);
             
             if (!data?.chart?.result) {
                 // Fallback to OTC
-                url = `https://query1.finance.yahoo.com/v8/finance/chart/${uCode}.TWO?range=5y&interval=1d`;
+                url = `https://query1.finance.yahoo.com/v8/finance/chart/${uCode}.TWO?range=${range}&interval=1d`;
                 data = await fetchWithDualProxy(url);
             }
             
@@ -766,7 +766,7 @@
                   
                   for (const sym of symbolsToFetch) {
                       try {
-                          const historyMap = await fetchHistoryForSymbol(sym);
+                          const historyMap = await fetchHistoryForSymbol(sym, '1y'); // 首次載入時改為抓取 1 年歷史
                           if (isMounted && historyMap) {
                               // Save fetched history back to Firestore cache
                               const historyDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'priceHistory', sym);
@@ -1121,7 +1121,7 @@
             }
 
             setUpdatingPrices(true);
-            setPriceUpdateMsg("正在篩選持股並連線...");
+            setPriceUpdateMsg("正在更新即時股價與歷史曲線...");
             
             try {
                 const inventory = {};
@@ -1139,13 +1139,13 @@
                     return;
                 }
 
-                setPriceUpdateMsg(`正在更新 ${activeSymbols.length} 檔持股價格...`);
-
                 const batch = writeBatch(db);
                 const now = Math.floor(Date.now() / 1000);
                 const todayStr = getLocalYMD(); // 今天日期，用於增量更新歷史曲線
                 let successCount = 0;
+                const updatedDataMap = {}; // 用於暫存即時抓到的最新價，稍後合併進歷史線
                 
+                // --- 階段 1：批次抓取最新即時股價 (TWSE) ---
                 const CHUNK_SIZE = 20; 
                 const chunks = [];
                 for (let i = 0; i < activeSymbols.length; i += CHUNK_SIZE) {
@@ -1153,7 +1153,7 @@
                 }
 
                 const stageStockUpdate = (symbol, price, changePercent) => {
-                    // 1. 更新當下持股庫存的現價
+                    // 1. 更新當下持股庫存的即時現價
                     const targetDocs = allHoldings.filter(h => h.symbol === symbol);
                     targetDocs.forEach(docData => {
                         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', docData.id);
@@ -1164,13 +1164,7 @@
                         });
                     });
                     
-                    // 2. 將今天的收盤價寫入 Firestore 的「歷史曲線快取」中
-                    const historyDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'priceHistory', symbol);
-                    batch.set(historyDocRef, {
-                        history: { [todayStr]: price },
-                        lastUpdated: now
-                    }, { merge: true });
-
+                    updatedDataMap[symbol] = price; // 紀錄最新價
                     successCount++;
                 };
 
@@ -1188,7 +1182,6 @@
                              data.msgArray.forEach(result => {
                                  const symbol = result.c; 
                                  if (chunk.includes(symbol)) {
-                                     // 使用獨立的強化版解析引擎
                                      const parsed = parseTwsePrice(result);
                                      
                                      if (!isNaN(parsed.price)) {
@@ -1223,9 +1216,43 @@
                     }
                 }
 
+                // --- 階段 2：回補過去一段時間的歷史收盤價，確保曲線不中斷 ---
+                setPriceUpdateMsg("正在回補歷史波動曲線...");
+                const CHUNK_SIZE_HISTORY = 5; // 歷史查詢較耗資源，一次 5 檔平行處理
+                const historyChunks = [];
+                for (let i = 0; i < activeSymbols.length; i += CHUNK_SIZE_HISTORY) {
+                    historyChunks.push(activeSymbols.slice(i, i + CHUNK_SIZE_HISTORY));
+                }
+
+                for (const chunk of historyChunks) {
+                    await Promise.all(chunk.map(async (symbol) => {
+                        // 若完全沒資料則抓 1 年，否則只抓近 1 個月來補足缺口
+                        const range = (!historicalPrices[symbol] || Object.keys(historicalPrices[symbol]).length < 10) ? '1y' : '1mo';
+                        const historyMap = await fetchHistoryForSymbol(symbol, range);
+                        
+                        let combinedHistory = { ...(historicalPrices[symbol] || {}) };
+                        if (historyMap) {
+                            // 自動縫合舊資料與新抓到的資料
+                            combinedHistory = { ...combinedHistory, ...historyMap };
+                        }
+                        
+                        // 寫入今天的即時最新價，讓今天的趨勢點馬上反應
+                        if (updatedDataMap[symbol]) {
+                            combinedHistory[todayStr] = updatedDataMap[symbol];
+                        }
+
+                        const historyDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'priceHistory', symbol);
+                        batch.set(historyDocRef, {
+                            history: combinedHistory,
+                            lastUpdated: now
+                        }, { merge: true }); // 安全的深層合併
+                    }));
+                    await new Promise(r => setTimeout(r, 200));
+                }
+
                 if (successCount > 0) {
                     await batch.commit();
-                    setPriceUpdateMsg(`更新完成：成功更新 ${successCount} 檔並儲存今日收盤價`);
+                    setPriceUpdateMsg(`更新完成：成功同步 ${successCount} 檔現價與歷史曲線`);
                     setLastUpdateTime(new Date());
                 } else {
                     setPriceUpdateMsg("更新失敗或無資料變動");
