@@ -907,6 +907,11 @@
               const marketValue = g.shares * g.currentPrice;
               const unrealizedProfit = marketValue - g.totalCost;
               const unrealizedProfitPercent = g.totalCost > 0 ? (unrealizedProfit / g.totalCost) * 100 : 0;
+              
+              // 計算該單一持股的當日損益
+              const change = g.dailyChangePercent || 0;
+              const prevVal = change === 0 ? marketValue : marketValue / (1 + change / 100);
+              const dailyProfit = marketValue - prevVal;
                
               return {
                 ...g,
@@ -914,20 +919,15 @@
                 marketValue,
                 unrealizedProfit,
                 unrealizedProfitPercent,
-                totalProfit: g.realizedProfit + unrealizedProfit
+                totalProfit: g.realizedProfit + unrealizedProfit,
+                dailyProfit
               };
             }).filter(g => g.shares > 0 || g.realizedProfit !== 0);
           }, [holdings, members]);
 
           // --- Calculate Total Daily Profit ---
           const totalDailyProfit = useMemo(() => {
-            return aggregatedHoldings.reduce((sum, h) => {
-                const change = h.dailyChangePercent || 0;
-                const marketVal = h.marketValue || 0;
-                if (marketVal === 0 || change === 0) return sum;
-                const prevVal = marketVal / (1 + change / 100);
-                return sum + (marketVal - prevVal);
-            }, 0);
+            return aggregatedHoldings.reduce((sum, h) => sum + (h.dailyProfit || 0), 0);
           }, [aggregatedHoldings]);
           
           // --- Total Asset Value & Profits ---
@@ -1791,6 +1791,7 @@
                                 const mTotalCost = memberHoldings.reduce((sum, h) => sum + h.totalCost, 0);
                                 const mTotalProfit = memberHoldings.reduce((sum, h) => sum + h.unrealizedProfit, 0);
                                 const mProfitPercent = mTotalCost > 0 ? (mTotalProfit / mTotalCost) * 100 : 0;
+                                const mTotalDailyProfit = memberHoldings.reduce((sum, h) => sum + (h.dailyProfit || 0), 0);
 
                                 return (
                                     <div key={m.id} className="border border-slate-200 rounded-xl overflow-hidden shadow-sm bg-white">
@@ -1803,7 +1804,12 @@
                                                 <span className="text-slate-500">市值 <span className="font-bold text-slate-800 ml-1">{formatCurrency(mTotalValue)}</span></span>
                                                 <span className="text-slate-500">未實現 
                                                     <span className={`font-bold ml-1 ${mTotalProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
-                                                        {mTotalProfit > 0 ? '+' : ''}{formatNumber(mTotalProfit)} ({mProfitPercent.toFixed(1)}%)
+                                                        {mTotalProfit > 0 ? '+' : ''}{formatNumber(Math.round(mTotalProfit))} ({mProfitPercent.toFixed(1)}%)
+                                                    </span>
+                                                </span>
+                                                <span className="text-slate-500">當日損益 
+                                                    <span className={`font-bold ml-1 ${mTotalDailyProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                                                        {mTotalDailyProfit > 0 ? '+' : ''}{formatNumber(Math.round(mTotalDailyProfit))}
                                                     </span>
                                                 </span>
                                             </div>
@@ -1818,6 +1824,7 @@
                                                      <th className="p-3 text-right">現價</th>
                                                      <th className="p-3 text-right">市值</th>
                                                      <th className="p-3 text-right">未實現損益</th>
+                                                     <th className="p-3 text-right">當日損益</th>
                                                      <th className="p-3 text-right">已實現</th>
                                                      <th className="p-3 text-center">操作</th>
                                                   </tr>
@@ -1845,6 +1852,9 @@
                                                           <td className={`p-3 text-right font-medium ${h.unrealizedProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
                                                               {formatNumber(h.unrealizedProfit)}
                                                               <div className="text-xs opacity-75">{h.unrealizedProfitPercent.toFixed(1)}%</div>
+                                                          </td>
+                                                          <td className={`p-3 text-right font-medium ${h.dailyProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                                                              {h.dailyProfit > 0 ? '+' : ''}{formatNumber(Math.round(h.dailyProfit))}
                                                           </td>
                                                           <td className={`p-3 text-right ${h.realizedProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>{formatNumber(h.realizedProfit)}</td>
                                                           <td className="p-3 text-center">
