@@ -3,9 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>家庭資產管家 (單檔測試版)</title>
+    <title>家庭資產管家</title>
 
-    <!-- 1. 載入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
@@ -20,7 +19,6 @@
       }
     </script>
 
-    <!-- 2. Import Map -->
     <script type="importmap">
     {
       "imports": {
@@ -36,10 +34,8 @@
     }
     </script>
 
-    <!-- 3. Babel for JSX -->
     <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
 
-    <!-- 4. Global Styles -->
     <style>
       body { background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
       .scrollbar-hide::-webkit-scrollbar { display: none; }
@@ -66,24 +62,21 @@
 <body>
     <div id="root"></div>
 
-    <!-- 5. 主要程式碼 -->
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
         import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid, Area, AreaChart, Brush } from 'recharts';
-        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2, ChevronRight, XCircle, UserPlus, AlertTriangle, Download, FileJson, Copy, LockOpen, Delete, FileSpreadsheet } from 'lucide-react';
+        import { Plus, Trash2, Edit2, TrendingUp, TrendingDown, Users, DollarSign, RefreshCw, PieChart as PieChartIcon, Save, X, AlertCircle, Upload, FileText, Clock, ShieldCheck, Search, Calendar, ChevronDown, ChevronUp, Filter, ArrowRightLeft, StickyNote, Layers, List, Activity, Lock, Settings, Unlock, Loader2, ChevronRight, XCircle, UserPlus, AlertTriangle, Download, FileJson, Copy, LockOpen, Delete, FileSpreadsheet } from 'lucide-react';
         
         // 新增報表匯出套件
-        import * as XLSX from 'xlsx';
         import jsPDF from 'jspdf';
         import html2canvas from 'html2canvas';
 
-        // Firebase
-        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-        import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, writeBatch, getDoc, setDoc, getDocs } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, writeBatch, getDoc, setDoc, getDocs } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
-        const firebaseConfig = {
+        const fallbackFirebaseConfig = {
             apiKey: "AIzaSyC2mxpOL7hzieOBCv_7rPI6E-xpCe6DznA",
             authDomain: "familystockprofolio.firebaseapp.com",
             projectId: "familystockprofolio",
@@ -91,18 +84,15 @@
             messagingSenderId: "338950854674",
             appId: "1:338950854674:web:0f56f1082c5053782780e0"
         };
-
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : fallbackFirebaseConfig;
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        // 設定 Google 登入提供者
-        const googleProvider = new GoogleAuthProvider();
-        const appId = "github-web-version";
+        const appId = typeof __app_id !== 'undefined' ? __app_id : "github-web-version";
 
         const STOCK_DICTIONARY = {
-            '0050': '元大台灣50', '0051': '元大中型100', '0052': '富邦科技', '0053': '元大電子', '0055': '元大MSCI金融', '0056': '元大高股息', '0057': '富邦摩台', '0061': '元大寶滬深', '006203': '元大MSCI台灣', '006204': '永豐臺灣加權', '006205': '富邦上証', '006206': '元大上證50', '006207': '復華滬深', '006208': '富邦台50', '00631L': '元大台灣50正2', '00632R': '元大台灣50反1', '00633L': '富邦上証正2', '00634R': '富邦上証反1', '00635U': '期元大S&P黃金', '00636': '國泰中國A50', '00637L': '元大滬深300正2', '00638R': '元大滬深300反1', '00639': '富邦深100', '00640L': '富邦日本正2', '00641R': '富邦日本反1', '00642U': '期元大S&P石油', '00643': '群益深証中小', '00645': '富邦日本', '00646': '元大S&P500', '00647L': '元大S&P500正2', '00648R': '元大S&P500反1', '00650L': '復華香港正2', '00651R': '復華香港反1', '00652': '富邦印度', '00653L': '富邦印度正2', '00654R': '富邦印度反1', '00655L': '國泰中國A50正2', '00656R': '國泰中國A50反1', '00657': '國泰日經225', '00660': '元大歐洲50', '00661': '元大日經225', '00662': '富邦NASDAQ', '00663L': '國泰臺灣加權正2', '00664R': '國泰臺灣加權反1', '00665L': '富邦恒生國企正2', '00666R': '富邦恒生國企反1', '00668': '國泰美國道瓊', '00669R': '國泰美國道瓊反1', '00670L': '富邦NASDAQ正2', '00671R': '富邦NASDAQ反1', '00673R': '期元大S&P原油反1', '00674R': '期元大S&P黃金反1', '00675L': '富邦臺灣加權正2', '00676R': '富邦臺灣加權反1', '00678': '群益那斯達克生技', '00679B': '元大美債20年', '00680L': '元大美債20正2', '00681R': '元大美債20反1', '00682U': '期元大美元指數', '00683L': '期元大美元指正2', '00684R': '期元大美元指反1', '00685L': '群益臺灣加權正2', '00686R': '群益臺灣加權反1', '00687B': '國泰20年美債', '00688L': '國泰20年美債正2', '00689R': '國泰20年美債反1', '00690': '兆豐藍籌30', '00692': '富邦公司治理', '00693U': '期街口S&P黃豆', '00700': '富邦恒生國企', '00701': '國泰股利精選30', '00702': '國泰標普低波高息', '00703': '台新MSCI中國', '00706L': '期元大S&P日圓正2', '00707R': '期元大S&P日圓反1', '00708L': '期元大S&P黃金正2', '00709': '富邦歐洲', '00710B': '復華彭博非投等債', '00711B': '復華彭博新興債', '00712': '復華富時不動產', '00713': '元大台灣高息低波', '00714': '群益道瓊美國地產', '00715L': '期街口布蘭特正2', '00717': '富邦美國特別股', '00728': '第一金工業30', '00730': '富邦臺灣優質高息', '00731': '復華富時高息低波', '00733': '富邦臺灣中小', '00735': '國泰臺韓科技', '00736': '國泰新興市場', '00737': '國泰AI機器人', '00738U': '期元大道瓊白銀', '00739': '元大MSCI A股', '00752': '中信中國50', '00753L': '中信中國50正2', '00757': '統一FANG+', '00762': '元大全球AI', '00763U': '期街口道瓊銅', '00770': '國泰北美科技', '00771': '元大US高息特別股', '00775B': '新光投等債15+', '00783': '富邦中証500', '00830': '國泰費城半導體', '00850': '元大臺灣ESG永續', '00851': '台新全球AI', '00852L': '國泰美國道瓊正2', '00861': '元大全球未來通訊', '00865B': '國泰US短期公債', '00875': '國泰網路資安', '00876': '元大全球5G', '00878': '國泰永續高股息', '00881': '國泰台灣科技龍頭', '00882': '中信中國高股息', '00885': '富邦越南', '00891': '中信關鍵半導體', '00892': '富邦台灣半導體', '00893': '國泰智能電動車', '00894': '中信小資高價30', '00895': '富邦未來車', '00896': '中信綠能及電動車', '00897': '富邦基因免疫生技', '00898': '國泰基因免疫革命', '00899': 'FT潔淨能源', '00900': '富邦特選高股息30', '00901': '永豐智能車供應鏈', '00902': '中信電池及儲能', '00903': '富邦元宇宙', '00904': '新光臺灣半導體30', '00905': 'FT臺灣Smart', '00907': '永豐優息存股', '00908': '富邦入息REITs+', '00909': '國泰數位支付服務', '00910': '第一金太空衛星', '00911': '兆豐洲際半導體', '00912': '中信臺灣智慧50', '00913': '兆豐台灣晶圓製造', '00915': '凱基優選高股息30', '00916': '國泰全球品牌50', '00917': '中信特選金融', '00918': '大華優利高填息30', '00919': '群益台灣精選高息', '00920': '富邦ESG綠色電力', '00921': '兆豐龍頭等權重', '00922': '國泰台灣領袖50', '00923': '群益台ESG低碳50', '00924': '復華S&P500成長', '00926': '凱基全球菁英55', '00927': '群益半導體收益', '00929': '復華台灣科技優息', '00930': '永豐ESG低碳高息', '00932': '兆豐永續高息等權', '00934': '中信成長高股息', '00935': '野村臺灣新科技50', '00936': '台新永續高息中小', '00938': '凱基優選30', '00939': '統一台灣高息動能', '00940': '元大台灣價值高息', '00941': '中信上游半導體', '00943': '兆豐電子高息等權', '00944': '野村趨勢動能高息', '00945B': '凱基美國非投等債', '00946': '群益科技高息成長', '00947': '台新臺灣IC設計', '00949': '復華日本龍頭', '00951': '台新日本半導體', '00952': '凱基台灣AI 50', '00953B': '群益優選非投等債', '00954': '中信日本半導體', '00956': '中信日經高股息', '00960': '野村全球航運龍頭', '00961': 'FT臺灣永續高息', '00962': '台新AI優息動能', '00963': '中信全球高股息', '00964': '中信亞太高股息', '00965': '元大航太防衛科技', '00971': '野村美國研發龍頭', '00972': '野村日本動能高息', '009800': '中信NASDAQ', '009801': '中信美國創新科技', '009802': '富邦旗艦50', '009803': '保德信市值動能50', '009804': '聯邦台精彩50', '009805': '新光美國電力基建', '009808': '華南永昌優選50', '009809': '富邦淨零ESG50', '00980A': '主動野村臺灣優選', '009810': '保德信全球藍籌', '009811': '統一美國50', '009812': '野村日本東證', '009813': '貝萊德標普卓越50', '009816': '凱基台灣TOP50', '00981A': '主動統一台股增長', '00981T': '平衡凱基雙核收息', '00982A': '主動群益台灣強棒', '00982D': '主動富邦動態入息', '00982T': '平衡兆豐台美動能', '00983A': '主動中信ARK創新', '00983D': '主動富邦複合收益', '00984A': '主動安聯台灣高息', '00984D': '主動聯博全球非投', '00985A': '主動野村台灣50', '00985B': '群益ESG投等債0-5', '00986A': '主動台新龍頭成長', '00987A': '主動台新優勢成長', '00988A': '主動統一全球創新', '00989A': '主動摩根美國科技', '00990A': '主動元大AI新經濟', '00991A': '主動復華未來50', '00992A': '主動群益科技創新', '00993A': '主動安聯台灣', '00994A': '主動第一金台股優', '00995A': '主動中信台灣卓越',
+            '0050': '元大台灣50', '0051': '元大中型100', '0052': '富邦科技', '0053': '元大電子', '0055': '元大MSCI金融', '0056': '元大高股息', '0057': '富邦摩台', '0061': '元大寶滬深', '006203': '元大MSCI台灣', '006204': '永豐臺灣加權', '006205': '富邦上証', '006206': '元大上證50', '006207': '復華滬深', '006208': '富邦台50', '00631L': '元大台灣50正2', '00632R': '元大台灣50反1', '00633L': '富邦上証正2', '00634R': '富邦上証反1', '00635U': '期元大S&P黃金', '00636': '國泰中國A50', '00637L': '元大滬深300正2', '00638R': '元大滬深300反1', '00639': '富邦深100', '00640L': '富邦日本正2', '00641R': '富邦日本反1', '00642U': '期元大S&P石油', '00643': '群益深証中小', '00645': '富邦日本', '00646': '元大S&P500', '00647L': '元大S&P500正2', '00648R': '元大S&P500反1', '00650L': '復華香港正2', '00651R': '復華香港反1', '00652': '富邦印度', '00653L': '富邦印度正2', '00654R': '富邦印度反1', '00655L': '國泰中國A50正2', '00656R': '國泰中國A50反1', '00657': '國泰日經225', '00660': '元大歐洲50', '00661': '元大日經225', '00662': '富邦NASDAQ', '00663L': '國泰臺灣加權正2', '00664R': '國泰臺灣加權反1', '00665L': '富邦恒生國企正2', '00666R': '富邦恒生國企反1', '00668': '國泰美國道瓊', '00669R': '國泰美國道瓊反1', '00670L': '富邦NASDAQ正2', '00671R': '富邦NASDAQ反1', '00673R': '期元大S&P原油反1', '00674R': '期元大S&P黃金反1', '00675L': '富邦臺灣加權正2', '00676R': '富邦臺灣加權反1', '00678': '群益那斯達克生技', '00679B': '元大美債20年', '00680L': '元大美債20正2', '00681R': '元大美債20反1', '00682U': '期元大美元指數', '00683L': '期元大美元指正2', '00684R': '期元大美元指反1', '00685L': '群益臺灣加權正2', '00686R': '群益臺灣加權反1', '00687B': '國泰20年美債', '00688L': '國泰20年美債正2', '00689R': '國泰20年美債反1', '00690': '兆豐藍籌30', '00692': '富邦公司治理', '00693U': '期街口S&P黃豆', '00700': '富邦恒生國企', '00701': '國泰股利精選30', '00702': '國泰標普低波高息', '00703': '台新MSCI中國', '00706L': '期元大S&P日圓正2', '00707R': '期元大S&P日圓反1', '00708L': '期元大S&P黃金正2', '00709': '富邦歐洲', '00710B': '復華彭博非投等債', '00711B': '復華彭博新興債', '00712': '復華富時不動產', '00713': '元大台灣高息低波', '00714': '群益道瓊美國地產', '00715L': '期街口布蘭特正2', '00717': '富邦美國特別股', '00728': '第一金工業30', '00730': '富邦臺灣優質高息', '00731': '復華富時高息低波', '00733': '富邦臺灣中小', '00735': '國泰臺韓科技', '00736': '國泰新興市場', '00737': '國泰AI機器人', '00738U': '期元大道瓊白銀', '00739': '元大MSCI A股', '00752': '中信中國50', '00753L': '中信中國50正2', '00757': '統一FANG+', '00762': '元大全球AI', '00763U': '期街口道瓊銅', '00770': '國泰北美科技', '00771': '元大US高息特別股', '00775B': '新光投等債15+', '00783': '富邦中証500', '00830': '國泰費城半導體', '00850': '元大臺灣ESG永續', '00851': '台新全球AI', '00852L': '國泰美國道瓊正2', '00861': '元大全球未來通訊', '00865B': '國泰US短期公債', '00875': '國泰網路資安', '00876': '元大全球5G', '00878': '國泰永續高股息', '00881': '國泰台灣科技龍頭', '00882': '中信中國高股息', '00885': '富邦越南', '00891': '中信關鍵半導體', '00892': '富邦台灣半導體', '00893': '國泰智能電動車', '00894': '中信小資高價30', '00895': '富邦未來車', '00896': '中信綠能及電動車', '00897': '富邦基因免疫生技', '00898': '國泰基因免疫革命', '00899': 'FT潔淨能源', '00900': '富邦特選高股息30', '00901': '永豐智能車供應鏈', '00902': '中信電池及儲能', '00903': '富邦元宇宙', '00904': '新光臺灣半導體30', '00905': 'FT臺灣Smart', '00907': '永豐優息存股', '00908': '富邦入息REITs+', '00909': '國泰數位支付服務', '00910': '第一金太空衛星', '00911': '兆豐洲際半導體', '00912': '中信臺灣智慧50', '00913': '兆豐台灣晶圓製造', '00915': '凱基優選高股息30', '00916': '國泰全球品牌50', '00917': '中信特選金融', '00918': '大華優利高填息30', '00919': '群益台灣精選高息', '00920': '富邦ESG綠色電力', '00921': '兆豐龍頭等權重', '00922': '國泰台灣領袖50', '00923': '群益台ESG低碳50', '00924': '復華S&P500成長', '00926': '凱基全球菁英55', '00927': '群益半導體收益', '00929': '復華台灣科技優息', '00930': '永豐ESG低碳高息', '00932': '兆豐永續高息等權', '00934': '中信成長高股息', '00935': '野村臺灣新科技50', '00936': '台新永續高息中小', '00938': '凱基優選30', '00939': '統一台灣高息動能', '00940': '元大台灣價值高息', '00941': '中信上游半導體', '00943': '兆豐電子高息等權', '00944': '野村趨勢動能高息', '00945B': '凱基美國非投等債', '00946': '群益科技高息成長', '00947': '台新臺灣IC設計', '00949': '復華日本龍頭', '00951': '台新日本半導體', '00952': '凱基台灣AI 50', '00953B': '群益優選非投等債', '00954': '中信日本半導體', '00956': '中信日經高股息', '00960': '野村全球航運龍頭', '00961': 'FT臺灣永續高息', '00962': '台新AI優息動能', '00963': '中信全球高股息', '00964': '中信亞太高股息', '00965': '元大航太防衛科技', '00971': '野村美國研發龍頭', '00972': '野村日本動能高息',
             '1101': '台泥', '2330': '台積電', '2317': '鴻海', '2454': '聯發科', '2308': '台達電', '2382': '廣達'
-            // (為了範例簡潔，僅保留部分股票字典，實際應用中可放回完整版)
         };
 
         const Card = ({ children, className = "" }) => (
@@ -182,6 +172,30 @@
           );
         };
 
+        const CustomDialog = ({ isOpen, type, title, message, onClose, onConfirm }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full overflow-hidden animate-in zoom-in-95 duration-200">
+                        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50">
+                            <h3 className="font-bold text-lg text-slate-800">{title}</h3>
+                        </div>
+                        <div className="p-6">
+                            <p className="text-slate-600 mb-6 whitespace-pre-wrap">{message}</p>
+                            <div className="flex justify-end gap-3">
+                                {type === 'confirm' && (
+                                    <Button variant="ghost" onClick={onClose}>取消</Button>
+                                )}
+                                <Button variant={type === 'confirm' ? 'danger' : 'primary'} onClick={() => { if(onConfirm) onConfirm(); onClose(); }}>
+                                    確定
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )
+        };
+
         const formatCurrency = (value) => new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(value);
         const formatNumber = (value) => new Intl.NumberFormat('zh-TW').format(value);
         const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1'];
@@ -191,6 +205,43 @@
              const tzOffset = dateObj.getTimezoneOffset() * 60000;
              return new Date(dateObj.getTime() - tzOffset).toISOString().split('T')[0];
         };
+
+        const isTradingDay = (dateObj) => {
+             const day = dateObj.getDay();
+             // 排除週六 (6) 與週日 (0)
+             if (day === 0 || day === 6) return false;
+
+             const ymd = getLocalYMD(dateObj);
+             
+             // 台灣股市 2026 國定假日與休市日 (手動維護清單)
+             const holidays2026 = [
+                 '2026-01-01', // 元旦
+                 '2026-02-12', // 春節前封關交割日 (不交易)
+                 '2026-02-13', // 春節前封關交割日 (不交易)
+                 '2026-02-16', // 除夕
+                 '2026-02-17', // 春節
+                 '2026-02-18', // 春節
+                 '2026-02-19', // 春節
+                 '2026-02-20', // 春節 (彈性放假)
+                 '2026-02-27', // 和平紀念日 (彈性放假)
+                 '2026-04-03', // 兒童節 (彈性放假)
+                 '2026-04-06', // 清明節 (補假)
+                 '2026-05-01', // 勞動節
+                 '2026-06-19', // 端午節
+                 '2026-09-25', // 中秋節
+                 '2026-09-28', // 教師節
+                 '2026-10-09', // 國慶日 (補假)
+                 '2026-10-26', // 台灣光復節 (補假)
+                 '2026-12-25'  // 行憲紀念日
+             ];
+             
+             // 若為當年的已知假日，則不屬於交易日
+             if (holidays2026.includes(ymd)) return false;
+
+             // 若需支援其他年份可在此擴充假日邏輯
+             
+             return true;
+        }
 
         const formatAxisDate = (dateStr) => {
              if (!dateStr) return '';
@@ -375,6 +426,9 @@
 
                 const data = [];
                 for (let d = new Date(start); d <= today; d.setDate(d.getDate() + 1)) {
+                    // 若不是交易日則跳過，不填入走勢圖中
+                    if (!isTradingDay(d)) continue;
+                    
                     const dateStr = getLocalYMD(d);
                     
                     while (txIndex < memberTxs.length) {
@@ -563,7 +617,7 @@
 
         function App() {
           const [user, setUser] = useState(null);
-          const [authLoading, setAuthLoading] = useState(true); // 加入登入狀態的 loading
+          const [authLoading, setAuthLoading] = useState(true); 
           const [activeTab, setActiveTab] = useState('overview');
           const [members, setMembers] = useState([]);
           const [allHoldings, setAllHoldings] = useState([]); 
@@ -612,8 +666,68 @@
 
           const fileInputRef = useRef(null);
 
-          // --- Auth & Data Fetching ---
+          const [sortSummary, setSortSummary] = useState({ key: 'marketValue', direction: 'desc' });
+          const [sortDetail, setSortDetail] = useState({ key: 'date', direction: 'desc' });
+
+          const handleSortSummary = (key) => {
+              setSortSummary(prev => ({ key, direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc' }));
+          };
+          
+          const handleSortDetail = (key) => {
+              setSortDetail(prev => ({ key, direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc' }));
+          };
+          
+          const renderSortHeader = (label, key, currentSort, onSort, align="right") => {
+              const isActive = currentSort.key === key;
+              const isLeft = align === 'left';
+              const isCenter = align === 'center';
+              return (
+                  <th className={`p-3 cursor-pointer hover:bg-slate-50 transition-colors select-none group/th ${isLeft ? 'pl-4 text-left' : isCenter ? 'text-center' : 'text-right'}`} onClick={() => onSort(key)}>
+                      <div className={`flex items-center gap-1 ${isLeft ? 'justify-start' : isCenter ? 'justify-center' : 'justify-end'}`}>
+                          {label}
+                          <span className="text-slate-400 flex flex-col justify-center">
+                              {isActive ? (
+                                  currentSort.direction === 'asc' ? <ChevronUp size={14} className="text-blue-500" /> : <ChevronDown size={14} className="text-blue-500" />
+                              ) : (
+                                  <ArrowRightLeft size={14} className="opacity-0 group-hover/th:opacity-50 rotate-90 transition-opacity" />
+                              )}
+                          </span>
+                      </div>
+                  </th>
+              );
+          };
+
+          const [dialogState, setDialogState] = useState({ isOpen: false, type: 'alert', title: '', message: '', onConfirm: null, onCloseCb: null });
+
+          const showAlert = (message, title = "提示", onCloseCb = null) => {
+              setDialogState({ isOpen: true, type: 'alert', title, message, onConfirm: null, onCloseCb });
+          };
+
+          const showConfirm = (message, onConfirm, title = "確認") => {
+              setDialogState({ isOpen: true, type: 'confirm', title, message, onConfirm, onCloseCb: null });
+          };
+
+          const closeDialog = () => {
+              const cb = dialogState.onCloseCb;
+              setDialogState(prev => ({ ...prev, isOpen: false }));
+              if (cb) cb();
+          };
+
           useEffect(() => {
+            const initAuth = async () => {
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (error) {
+                    console.error("Auth init error:", error);
+                    showAlert("認證失敗: " + error.message, "錯誤");
+                }
+            };
+            initAuth();
+
             const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
               setUser(currentUser);
               setAuthLoading(false);
@@ -621,35 +735,13 @@
             return () => unsubscribe();
           }, []);
 
-          // Google 登入與登出處理函數
-          const handleGoogleSignIn = async () => {
-              try {
-                  await signInWithPopup(auth, googleProvider);
-              } catch (error) {
-                  console.error("Google Login Error:", error);
-                  alert("登入失敗: " + error.message);
-              }
-          };
-
-          const handleSignOut = async () => {
-              try {
-                  await signOut(auth);
-                  // 登出後清空狀態
-                  setAllHoldings([]);
-                  setMembers([]);
-                  setHistoricalPrices({});
-                  setHasPin(false);
-                  setIsAuthenticated(false);
-              } catch (error) {
-                  console.error("Sign Out Error:", error);
-              }
-          };
-
           useEffect(() => {
             if (!user) return;
+            const userId = user.uid;
+
             const checkSecurity = async () => {
               try {
-                const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security');
+                const settingsRef = doc(db, 'artifacts', appId, 'users', userId, 'settings', 'security');
                 const snap = await getDoc(settingsRef);
                 if (snap.exists() && snap.data().pin) {
                   setHasPin(true);
@@ -665,12 +757,12 @@
             };
             checkSecurity();
 
-            const membersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'members');
+            const membersRef = collection(db, 'artifacts', appId, 'users', userId, 'members');
             const unsubMembers = onSnapshot(membersRef, (snapshot) => {
               setMembers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
             });
 
-            const holdingsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'holdings');
+            const holdingsRef = collection(db, 'artifacts', appId, 'users', userId, 'holdings');
             const unsubHoldings = onSnapshot(holdingsRef, (snapshot) => {
               const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
               setAllHoldings(data);
@@ -687,7 +779,7 @@
               }
             });
 
-            const historyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'priceHistory');
+            const historyRef = collection(db, 'artifacts', appId, 'users', userId, 'priceHistory');
             const unsubHistory = onSnapshot(historyRef, (snapshot) => {
                 const historyData = {};
                 snapshot.docs.forEach(doc => {
@@ -704,6 +796,7 @@
 
           useEffect(() => {
               if (!historyLoaded || allHoldings.length === 0 || !user) return;
+              const userId = user.uid;
               const uniqueSymbols = [...new Set(allHoldings.map(h => h.symbol))];
               const symbolsToFetch = uniqueSymbols.filter(sym => !historicalPrices[sym] || Object.keys(historicalPrices[sym]).length < 10);
               
@@ -716,7 +809,7 @@
                       try {
                           const historyMap = await fetchHistoryForSymbol(sym, '1y'); 
                           if (isMounted && historyMap) {
-                              const historyDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'priceHistory', sym);
+                              const historyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'priceHistory', sym);
                               await setDoc(historyDocRef, {
                                   history: historyMap,
                                   lastUpdated: Math.floor(Date.now() / 1000)
@@ -751,7 +844,7 @@
                     pendingActionRef.current = null;
                 }
             } else {
-                alert("密碼錯誤，請重試");
+                showAlert("密碼錯誤，請重試", "解鎖失敗");
                 setPinInput(""); 
             }
           };
@@ -769,7 +862,7 @@
           const handleToggleLock = () => {
               if (isAuthenticated && hasPin) {
                   setIsAuthenticated(false);
-                  alert("已鎖定編輯權限");
+                  showAlert("已鎖定編輯權限", "權限已變更");
               } else if (!isAuthenticated && hasPin) {
                   setShowUnlockModal(true);
               }
@@ -825,7 +918,7 @@
             return Object.values(groups).map(g => {
               const avgCost = g.shares > 0 ? g.totalCost / g.shares : 0;
               const marketValue = g.shares * g.currentPrice;
-              const unrealizedProfit = marketValue - g.totalCost;
+              const unrealizedProfit = Math.floor(marketValue - g.totalCost);
               const unrealizedProfitPercent = g.totalCost > 0 ? (unrealizedProfit / g.totalCost) * 100 : 0;
               
               const change = g.dailyChangePercent || 0;
@@ -881,6 +974,9 @@
 
             const data = [];
             for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+                // 若不是交易日則跳過，不填入走勢圖中
+                if (!isTradingDay(d)) continue;
+                
                 const dateStr = getLocalYMD(d);
                 while(txIndex < sortedTxs.length) {
                     const tx = sortedTxs[txIndex];
@@ -958,6 +1054,8 @@
 
           const handleUpdatePrices = async () => {
             if (!user || allHoldings.length === 0) return;
+            const userId = user.uid;
+
             if (hasPin && !isAuthenticated) {
                pendingActionRef.current = handleUpdatePrices;
                setShowUnlockModal(true);
@@ -998,7 +1096,7 @@
                 const stageStockUpdate = (symbol, price, changePercent) => {
                     const targetDocs = allHoldings.filter(h => h.symbol === symbol);
                     targetDocs.forEach(docData => {
-                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', docData.id);
+                        const docRef = doc(db, 'artifacts', appId, 'users', userId, 'holdings', docData.id);
                         batch.update(docRef, { currentPrice: price, dailyChangePercent: changePercent, lastUpdateTimestamp: now });
                     });
                     updatedDataMap[symbol] = price; 
@@ -1060,7 +1158,7 @@
                         if (historyMap) combinedHistory = { ...combinedHistory, ...historyMap };
                         if (updatedDataMap[symbol]) combinedHistory[todayStr] = updatedDataMap[symbol];
 
-                        const historyDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'priceHistory', symbol);
+                        const historyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'priceHistory', symbol);
                         batch.set(historyDocRef, { history: combinedHistory, lastUpdated: now }, { merge: true }); 
                     }));
                     await new Promise(r => setTimeout(r, 200));
@@ -1084,7 +1182,8 @@
 
           const handleAddMember = async () => {
             if (!newMemberName.trim() || !user) return;
-            await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'members'), {
+            const userId = user.uid;
+            await addDoc(collection(db, 'artifacts', appId, 'users', userId, 'members'), {
               name: newMemberName,
               createdAt: new Date().toISOString()
             });
@@ -1094,11 +1193,12 @@
 
           const handleSaveHolding = async () => {
              if (!user) return;
+             const userId = user.uid;
              
              const { shares, price, fee, type, id, ...restForm } = holdingForm; 
              
              if (!shares || !price || isNaN(parseFloat(shares)) || isNaN(parseFloat(price))) {
-                 alert("請輸入有效的股數與價格");
+                 showAlert("請輸入有效的股數與價格", "輸入錯誤");
                  return;
              }
 
@@ -1116,30 +1216,26 @@
              Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
 
              try {
-                 if (editingHolding) await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', editingHolding.id), payload);
-                 else await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'holdings'), payload);
+                 if (editingHolding) await updateDoc(doc(db, 'artifacts', appId, 'users', userId, 'holdings', editingHolding.id), payload);
+                 else await addDoc(collection(db, 'artifacts', appId, 'users', userId, 'holdings'), payload);
                  setIsAddHoldingOpen(false);
                  setEditingHolding(null);
                  resetForm();
              } catch (e) {
                  console.error("Save failed", e);
-                 alert("儲存失敗: " + e.message);
+                 showAlert("儲存失敗: " + e.message, "錯誤");
              }
-          };
-
-          const handleDeleteHolding = (id, e) => {
-             e.stopPropagation(); 
-             setDeleteConfirm({ id });
           };
 
           const executeDelete = async () => {
              if (!user || !deleteConfirm) return;
+             const userId = user.uid;
              try {
-                await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', deleteConfirm.id));
+                await deleteDoc(doc(db, 'artifacts', appId, 'users', userId, 'holdings', deleteConfirm.id));
                 setDeleteConfirm(null);
              } catch (error) {
                 console.error("Delete failed:", error);
-                alert("刪除失敗: " + error.message);
+                showAlert("刪除失敗: " + error.message, "錯誤");
              }
           };
 
@@ -1163,24 +1259,26 @@
           };
           
           const handleSetPin = async () => {
-            if (newPin.length < 4) { alert("PIN 碼至少需 4 位數"); return; }
+            if (newPin.length < 4) { showAlert("PIN 碼至少需 4 位數", "輸入錯誤"); return; }
+            if (!user) return;
+            const userId = user.uid;
             try {
-              await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security'), { pin: newPin }, { merge: true });
+              await setDoc(doc(db, 'artifacts', appId, 'users', userId, 'settings', 'security'), { pin: newPin }, { merge: true });
               setStoredPin(newPin);
               setHasPin(true);
               setNewPin("");
               setIsAuthenticated(true); 
-              alert("安全密碼設定成功！");
+              showAlert("安全密碼設定成功！", "成功");
             } catch (e) { console.error(e); }
           };
 
-          // --- Settings Data Management Handlers ---
           const handleExportData = async () => {
             if(!user) return;
+            const userId = user.uid;
             try {
                 setProcessingSettings(true);
-                const membersSnap = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, 'members'));
-                const holdingsSnap = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, 'holdings'));
+                const membersSnap = await getDocs(collection(db, 'artifacts', appId, 'users', userId, 'members'));
+                const holdingsSnap = await getDocs(collection(db, 'artifacts', appId, 'users', userId, 'holdings'));
                 
                 const data = {
                   version: 1, exportedAt: new Date().toISOString(),
@@ -1197,13 +1295,14 @@
                 URL.revokeObjectURL(url);
             } catch(e) {
                 console.error(e);
-                alert("匯出失敗：" + e.message);
+                showAlert("匯出失敗：" + e.message, "錯誤");
             } finally { setProcessingSettings(false); }
           };
 
           const handleImportData = async (e) => {
             const file = e.target.files[0];
             if(!file || !user) return;
+            const userId = user.uid;
             
             const reader = new FileReader();
             reader.onload = async (event) => {
@@ -1215,21 +1314,20 @@
                     const batch = writeBatch(db);
                     
                     for(const m of data.members) {
-                        const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'members', m.id);
+                        const ref = doc(db, 'artifacts', appId, 'users', userId, 'members', m.id);
                         const {id, ...rest} = m;
                         batch.set(ref, rest);
                     }
                     for(const h of data.holdings) {
-                        const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', h.id);
+                        const ref = doc(db, 'artifacts', appId, 'users', userId, 'holdings', h.id);
                         const {id, ...rest} = h;
                         batch.set(ref, rest);
                     }
                     
                     await batch.commit();
-                    alert(`成功匯入 ${data.members.length} 位成員與 ${data.holdings.length} 筆交易紀錄！`);
-                    window.location.reload();
+                    showAlert(`成功匯入 ${data.members.length} 位成員與 ${data.holdings.length} 筆交易紀錄！`, "成功", () => window.location.reload());
                 } catch(e) {
-                    alert("匯入失敗：" + e.message);
+                    showAlert("匯入失敗：" + e.message, "錯誤");
                 } finally {
                     setProcessingSettings(false);
                     if(fileInputRef.current) fileInputRef.current.value = "";
@@ -1238,11 +1336,12 @@
             reader.readAsText(file);
           };
 
-          const handleRemoveDuplicates = async () => {
-            if(!user || !confirm("確定要移除重複的交易紀錄嗎？\n系統將保留每筆重複資料中的一筆，並刪除其餘重複項。\n建議先執行「匯出備份」。")) return;
+          const executeRemoveDuplicates = async () => {
+            if(!user) return;
+            const userId = user.uid;
             try {
                 setProcessingSettings(true);
-                const snap = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, 'holdings'));
+                const snap = await getDocs(collection(db, 'artifacts', appId, 'users', userId, 'holdings'));
                 const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
                 const seen = new Set();
                 const duplicates = [];
@@ -1253,44 +1352,51 @@
                     else seen.add(key);
                 });
                 
-                if(duplicates.length === 0) { alert("未發現重複的交易紀錄。"); return; }
+                if(duplicates.length === 0) { showAlert("未發現重複的交易紀錄。", "完成"); return; }
                 
                 const batch = writeBatch(db);
                 duplicates.forEach(id => {
-                    batch.delete(doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', id));
+                    batch.delete(doc(db, 'artifacts', appId, 'users', userId, 'holdings', id));
                 });
                 await batch.commit();
-                alert(`已成功移除 ${duplicates.length} 筆重複資料。`);
+                showAlert(`已成功移除 ${duplicates.length} 筆重複資料。`, "成功");
             } catch(e) {
                 console.error(e);
-                alert("處理失敗：" + e.message);
+                showAlert("處理失敗：" + e.message, "錯誤");
             } finally { setProcessingSettings(false); }
+          }
+
+          const handleRemoveDuplicates = () => {
+             showConfirm("確定要移除重複的交易紀錄嗎？\n系統將保留每筆重複資料中的一筆，並刪除其餘重複項。\n建議先執行「匯出備份」。", executeRemoveDuplicates, "確認操作");
           };
 
-          const handleClearData = async () => {
-            if (!user) return;
-            if (!confirm("⚠️ 危險操作警告！\n此操作將「永久刪除」所有資料，且無法復原！\n\n確定要繼續清空所有資料嗎？")) return;
-            if (!confirm("再次確認：您真的要清空嗎？")) return;
-
-            try {
+          const executeClearData = async () => {
+             if (!user) return;
+             const userId = user.uid;
+             try {
                 setProcessingSettings(true);
                 const batch = writeBatch(db);
-                const holdingsSnap = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, 'holdings'));
+                const holdingsSnap = await getDocs(collection(db, 'artifacts', appId, 'users', userId, 'holdings'));
                 holdingsSnap.forEach(doc => batch.delete(doc.ref));
-                const membersSnap = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, 'members'));
+                const membersSnap = await getDocs(collection(db, 'artifacts', appId, 'users', userId, 'members'));
                 membersSnap.forEach(doc => batch.delete(doc.ref));
                 await batch.commit();
-                alert("系統已重置，所有資料已清空。");
-                window.location.reload();
-            } catch (e) {
+                showAlert("系統已重置，所有資料已清空。", "成功", () => window.location.reload());
+             } catch (e) {
                 console.error(e);
-                alert("清空失敗：" + e.message);
-            } finally { setProcessingSettings(false); }
+                showAlert("清空失敗：" + e.message, "錯誤");
+             } finally { setProcessingSettings(false); }
+          }
+
+          const handleClearData = () => {
+             showConfirm("⚠️ 危險操作警告！\n此操作將「永久刪除」所有資料，且無法復原！\n\n確定要繼續清空所有資料嗎？", () => {
+                 showConfirm("再次確認：您真的要清空嗎？", executeClearData, "最終確認");
+             }, "危險操作");
           };
 
           const handleExportExcel = () => {
               if (aggregatedHoldings.length === 0 && allHoldings.length === 0) {
-                  alert("目前沒有資料可匯出");
+                  showAlert("目前沒有資料可匯出", "提示");
                   return;
               }
               
@@ -1337,7 +1443,7 @@
                   XLSX.writeFile(wb, `家庭資產管家_報表_${getLocalYMD()}.xlsx`);
               } catch (e) {
                   console.error("Excel 匯出失敗", e);
-                  alert("Excel 匯出發生錯誤：" + e.message);
+                  showAlert("Excel 匯出發生錯誤：" + e.message, "錯誤");
               } finally {
                   setProcessingSettings(false);
               }
@@ -1345,7 +1451,7 @@
 
           const handleExportPDF = async () => {
               if (members.length === 0 || aggregatedHoldings.length === 0) {
-                  alert("目前沒有資料可匯出");
+                  showAlert("目前沒有資料可匯出", "提示");
                   return;
               }
 
@@ -1443,11 +1549,9 @@
               document.body.appendChild(container);
 
               try {
-                  // 利用 html2canvas 截圖，scale=2 確保清晰度
                   const canvas = await html2canvas(container, { scale: 2, useCORS: true }); 
                   const imgData = canvas.toDataURL('image/png');
                   
-                  // 轉換至 PDF (A4 直式)
                   const pdf = new jsPDF('p', 'mm', 'a4');
                   const pdfWidth = pdf.internal.pageSize.getWidth();
                   const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
@@ -1456,57 +1560,26 @@
                   pdf.save(`成員損益報告_${getLocalYMD()}.pdf`);
               } catch (e) {
                   console.error("PDF 匯出失敗: ", e);
-                  alert("PDF 匯出發生錯誤");
+                  showAlert("PDF 匯出發生錯誤", "錯誤");
               } finally {
                   document.body.removeChild(container);
                   setProcessingSettings(false);
               }
           };
 
-          // 如果還在確認登入狀態，顯示 Loading
           if (authLoading) {
               return (
                   <div className="min-h-screen flex items-center justify-center bg-slate-50">
                       <div className="flex flex-col items-center gap-4">
                           <Loader2 size={40} className="animate-spin text-blue-500" />
-                          <p className="text-slate-500 font-medium">載入中...</p>
+                          <p className="text-slate-500 font-medium">系統載入中...</p>
                       </div>
                   </div>
               );
           }
 
-          // 如果未登入，顯示登入畫面
-          if (!user) {
-              return (
-                  <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-                      <Card className="max-w-md w-full p-8 text-center space-y-6">
-                          <div className="flex justify-center mb-2">
-                              <div className="bg-blue-100 p-4 rounded-full">
-                                  <TrendingUp size={48} className="text-blue-600" />
-                              </div>
-                          </div>
-                          <div>
-                              <h1 className="text-2xl font-bold text-slate-800 mb-2">家庭資產管家</h1>
-                              <p className="text-slate-500 text-sm">請登入您的 Google 帳號以存取專屬您的資產資料。</p>
-                          </div>
-                          
-                          <button 
-                              onClick={handleGoogleSignIn}
-                              className="w-full flex items-center justify-center gap-3 bg-white border-2 border-slate-200 text-slate-700 font-bold py-3 px-4 rounded-xl hover:bg-slate-50 hover:border-slate-300 transition-all active:scale-95 shadow-sm"
-                          >
-                              <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-                                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-                                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                                  <path d="M1 1h22v22H1z" fill="none"/>
-                              </svg>
-                              使用 Google 帳號登入
-                          </button>
-                      </Card>
-                  </div>
-              );
-          }
+          const userAvatar = user?.photoURL || 'https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y';
+          const userName = user?.displayName || (user?.uid ? user.uid.substring(0, 6) : "匿名使用者");
 
           return (
             <div className="min-h-screen pb-6">
@@ -1538,12 +1611,10 @@
                     </div>
 
                     <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
-                        {/* 使用者資訊與登出 */}
                         <div className="hidden md:flex items-center gap-2 mr-2 border-r border-slate-200 pr-3">
-                            <img src={user.photoURL || 'https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y'} alt="Avatar" className="w-8 h-8 rounded-full border border-slate-200" />
+                            <img src={userAvatar} alt="Avatar" className="w-8 h-8 rounded-full border border-slate-200" />
                             <div className="flex flex-col">
-                                <span className="text-xs font-bold text-slate-700 leading-none">{user.displayName || '使用者'}</span>
-                                <button onClick={handleSignOut} className="text-[10px] text-slate-400 hover:text-red-500 text-left transition-colors mt-0.5">登出</button>
+                                <span className="text-xs font-bold text-slate-700 leading-none">{userName}</span>
                             </div>
                         </div>
 
@@ -1572,12 +1643,6 @@
                                 {isAuthenticated ? <LockOpen size={20}/> : <Lock size={20}/>}
                             </button>
                         )}
-
-                        {/* Mobile 版的登出按鈕 (隱藏在漢堡選單內或直接顯示，這裡用一個小圖示代替) */}
-                        <button onClick={handleSignOut} className="md:hidden p-2 text-slate-500 hover:bg-red-50 hover:text-red-500 rounded-full" title="登出">
-                            <img src={user.photoURL || 'https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y'} alt="Avatar" className="w-6 h-6 rounded-full" />
-                        </button>
-
                         <Button variant="secondary" onClick={() => handleAuthRequired(() => { resetForm(); setIsAddHoldingOpen(true); })} className="px-3 text-sm ml-1 font-bold">新增</Button>
                     </div>
                 </div>
@@ -1767,55 +1832,66 @@
                                             <table className="w-full text-sm text-left">
                                                <thead className="bg-white text-slate-400 font-medium border-b border-slate-100">
                                                   <tr>
-                                                     <th className="p-3 pl-4">標的</th>
-                                                     <th className="p-3 text-right">股數</th>
-                                                     <th className="p-3 text-right">均價</th>
-                                                     <th className="p-3 text-right">現價</th>
-                                                     <th className="p-3 text-right">市值</th>
-                                                     <th className="p-3 text-right">未實現損益</th>
-                                                     <th className="p-3 text-right">當日損益</th>
-                                                     <th className="p-3 text-right">已實現</th>
+                                                     {renderSortHeader('標的', 'symbol', sortSummary, handleSortSummary, 'left')}
+                                                     {renderSortHeader('股數', 'shares', sortSummary, handleSortSummary)}
+                                                     {renderSortHeader('均價', 'avgCost', sortSummary, handleSortSummary)}
+                                                     {renderSortHeader('現價', 'currentPrice', sortSummary, handleSortSummary)}
+                                                     {renderSortHeader('市值', 'marketValue', sortSummary, handleSortSummary)}
+                                                     {renderSortHeader('未實現損益', 'unrealizedProfit', sortSummary, handleSortSummary)}
+                                                     {renderSortHeader('當日損益', 'dailyProfit', sortSummary, handleSortSummary)}
+                                                     {renderSortHeader('已實現', 'realizedProfit', sortSummary, handleSortSummary)}
                                                      <th className="p-3 text-center">操作</th>
                                                   </tr>
                                                </thead>
                                                <tbody className="divide-y divide-slate-100 bg-white">
-                                                  {memberHoldings.map((h, idx) => (
-                                                      <tr 
-                                                          key={idx} 
-                                                          onClick={() => handleDrillDown(h.memberId, h.symbol)}
-                                                          className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
-                                                      >
-                                                          <td className="p-3 pl-4">
-                                                              <div className="font-bold text-slate-800">{h.name}</div>
-                                                              <div className="text-xs text-slate-400">{h.symbol}</div>
-                                                          </td>
-                                                          <td className="p-3 text-right">{formatNumber(h.shares)}</td>
-                                                          <td className="p-3 text-right text-slate-500">{formatNumber(h.avgCost.toFixed(1))}</td>
-                                                          <td className="p-3 text-right">
-                                                              <div className="font-medium">{h.currentPrice || '-'}</div>
-                                                              {h.dailyChangePercent !== 0 && (
-                                                                  <div className={`text-xs ${h.dailyChangePercent > 0 ? 'text-red-500' : 'text-emerald-500'}`}>{h.dailyChangePercent > 0 ? '+' : ''}{h.dailyChangePercent.toFixed(2)}%</div>
-                                                              )}
-                                                          </td>
-                                                          <td className="p-3 text-right font-medium text-slate-800">{formatNumber(h.marketValue)}</td>
-                                                          <td className={`p-3 text-right font-medium ${h.unrealizedProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
-                                                              {formatNumber(h.unrealizedProfit)}
-                                                              <div className="text-xs opacity-75">{h.unrealizedProfitPercent.toFixed(1)}%</div>
-                                                          </td>
-                                                          <td className={`p-3 text-right font-medium ${h.dailyProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
-                                                              {h.dailyProfit > 0 ? '+' : ''}{formatNumber(Math.round(h.dailyProfit))}
-                                                          </td>
-                                                          <td className={`p-3 text-right ${h.realizedProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>{formatNumber(h.realizedProfit)}</td>
-                                                          <td className="p-3 text-center">
-                                                              <button 
-                                                                  onClick={(e) => { e.stopPropagation(); handleAuthRequired(() => handleDrillDown(h.memberId, h.symbol)); }} 
-                                                                  className="text-blue-600 hover:text-blue-800 text-xs font-bold border border-blue-200 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
-                                                              >
-                                                                  明細
-                                                              </button>
-                                                          </td>
-                                                      </tr>
-                                                  ))}
+                                                  {(() => {
+                                                      let sortedHoldings = [...memberHoldings];
+                                                      if (sortSummary.key) {
+                                                          sortedHoldings.sort((a, b) => {
+                                                              let aVal = a[sortSummary.key];
+                                                              let bVal = b[sortSummary.key];
+                                                              if (typeof aVal === 'string') return sortSummary.direction === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+                                                              return sortSummary.direction === 'asc' ? (aVal || 0) - (bVal || 0) : (bVal || 0) - (aVal || 0);
+                                                          });
+                                                      }
+                                                      return sortedHoldings.map((h, idx) => (
+                                                          <tr 
+                                                              key={idx} 
+                                                              onClick={() => handleDrillDown(h.memberId, h.symbol)}
+                                                              className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
+                                                          >
+                                                              <td className="p-3 pl-4">
+                                                                  <div className="font-bold text-slate-800">{h.name}</div>
+                                                                  <div className="text-xs text-slate-400">{h.symbol}</div>
+                                                              </td>
+                                                              <td className="p-3 text-right">{formatNumber(h.shares)}</td>
+                                                              <td className="p-3 text-right text-slate-500">{formatNumber(h.avgCost.toFixed(1))}</td>
+                                                              <td className="p-3 text-right">
+                                                                  <div className="font-medium">{h.currentPrice || '-'}</div>
+                                                                  {h.dailyChangePercent !== 0 && (
+                                                                      <div className={`text-xs ${h.dailyChangePercent > 0 ? 'text-red-500' : 'text-emerald-500'}`}>{h.dailyChangePercent > 0 ? '+' : ''}{h.dailyChangePercent.toFixed(2)}%</div>
+                                                                  )}
+                                                              </td>
+                                                              <td className="p-3 text-right font-medium text-slate-800">{formatNumber(h.marketValue)}</td>
+                                                              <td className={`p-3 text-right font-medium ${h.unrealizedProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                                                                  {formatNumber(h.unrealizedProfit)}
+                                                                  <div className="text-xs opacity-75">{h.unrealizedProfitPercent.toFixed(1)}%</div>
+                                                              </td>
+                                                              <td className={`p-3 text-right font-medium ${h.dailyProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                                                                  {h.dailyProfit > 0 ? '+' : ''}{formatNumber(Math.round(h.dailyProfit))}
+                                                              </td>
+                                                              <td className={`p-3 text-right ${h.realizedProfit >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>{formatNumber(h.realizedProfit)}</td>
+                                                              <td className="p-3 text-center">
+                                                                  <button 
+                                                                      onClick={(e) => { e.stopPropagation(); handleAuthRequired(() => handleDrillDown(h.memberId, h.symbol)); }} 
+                                                                      className="text-blue-600 hover:text-blue-800 text-xs font-bold border border-blue-200 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
+                                                                  >
+                                                                      明細
+                                                                  </button>
+                                                              </td>
+                                                          </tr>
+                                                      ));
+                                                  })()}
                                                </tbody>
                                             </table>
                                         </div>
@@ -1853,43 +1929,54 @@
                                             <table className="w-full text-sm text-left">
                                                <thead className="bg-white text-slate-400 font-medium border-b border-slate-100">
                                                   <tr>
-                                                     <th className="p-3 pl-4">日期</th>
-                                                     <th className="p-3">動作</th>
-                                                     <th className="p-3">標的</th>
-                                                     <th className="p-3 text-right">股數</th>
-                                                     <th className="p-3 text-right">價格</th>
-                                                     <th className="p-3 text-right">總額</th>
+                                                     {renderSortHeader('日期', 'date', sortDetail, handleSortDetail, 'left')}
+                                                     {renderSortHeader('動作', 'shares', sortDetail, handleSortDetail, 'left')}
+                                                     {renderSortHeader('標的', 'symbol', sortDetail, handleSortDetail, 'left')}
+                                                     {renderSortHeader('股數', 'absShares', sortDetail, handleSortDetail)}
+                                                     {renderSortHeader('價格', 'price', sortDetail, handleSortDetail)}
+                                                     {renderSortHeader('總額', 'total', sortDetail, handleSortDetail)}
                                                      <th className="p-3 text-center">操作</th>
                                                   </tr>
                                                </thead>
                                                <tbody className="divide-y divide-slate-100 bg-white">
-                                                  {mHoldings.map((h) => {
-                                                     const isBuy = h.shares > 0;
-                                                     return (
-                                                         <tr 
-                                                            key={h.id} 
-                                                            onClick={() => handleAuthRequired(() => { 
-                                                                setEditingHolding(h); 
-                                                                setHoldingForm({
-                                                                    ...holdingForm, ...h, date: h.date, type: h.shares > 0 ? 'buy' : 'sell', 
-                                                                    shares: Math.abs(h.shares).toString(), fee: h.fee ? h.fee.toString() : "1", note: h.note || ""
-                                                                }); 
-                                                                setIsAddHoldingOpen(true); 
-                                                            })}
-                                                            className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
-                                                         >
-                                                            <td className="p-3 pl-4 text-slate-500 whitespace-nowrap">{h.date}</td>
-                                                            <td className="p-3"><span className={`px-2 py-0.5 rounded text-xs font-bold ${isBuy ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>{isBuy ? '買進' : '賣出'}</span></td>
-                                                            <td className="p-3"><div className="font-bold text-slate-800">{h.name}</div><div className="text-xs text-slate-400">{h.symbol}</div></td>
-                                                            <td className="p-3 text-right">{formatNumber(Math.abs(h.shares))}</td>
-                                                            <td className="p-3 text-right text-slate-500">{formatNumber(h.price)}</td>
-                                                            <td className="p-3 text-right font-medium text-slate-700">{formatNumber(Math.abs(h.shares * h.price))}</td>
-                                                            <td className="p-3 text-center">
-                                                               <button onClick={(e) => { e.stopPropagation(); handleAuthRequired(() => setDeleteConfirm({ id: h.id })); }} className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"><Trash2 size={16}/></button>
-                                                            </td>
-                                                         </tr>
-                                                     )
-                                                  })}
+                                                  {(() => {
+                                                      let sortedHoldings = [...mHoldings];
+                                                      if (sortDetail.key) {
+                                                          sortedHoldings.sort((a, b) => {
+                                                              let aVal = sortDetail.key === 'absShares' ? Math.abs(a.shares) : sortDetail.key === 'total' ? Math.abs(a.shares * a.price) : a[sortDetail.key];
+                                                              let bVal = sortDetail.key === 'absShares' ? Math.abs(b.shares) : sortDetail.key === 'total' ? Math.abs(b.shares * b.price) : b[sortDetail.key];
+                                                              if (typeof aVal === 'string') return sortDetail.direction === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+                                                              return sortDetail.direction === 'asc' ? (aVal || 0) - (bVal || 0) : (bVal || 0) - (aVal || 0);
+                                                          });
+                                                      }
+                                                      return sortedHoldings.map((h) => {
+                                                         const isBuy = h.shares > 0;
+                                                         return (
+                                                             <tr 
+                                                                key={h.id} 
+                                                                onClick={() => handleAuthRequired(() => { 
+                                                                    setEditingHolding(h); 
+                                                                    setHoldingForm({
+                                                                        ...holdingForm, ...h, date: h.date, type: h.shares > 0 ? 'buy' : 'sell', 
+                                                                        shares: Math.abs(h.shares).toString(), fee: h.fee ? h.fee.toString() : "1", note: h.note || ""
+                                                                    }); 
+                                                                    setIsAddHoldingOpen(true); 
+                                                                })}
+                                                                className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
+                                                             >
+                                                                <td className="p-3 pl-4 text-slate-500 whitespace-nowrap">{h.date}</td>
+                                                                <td className="p-3"><span className={`px-2 py-0.5 rounded text-xs font-bold ${isBuy ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>{isBuy ? '買進' : '賣出'}</span></td>
+                                                                <td className="p-3"><div className="font-bold text-slate-800">{h.name}</div><div className="text-xs text-slate-400">{h.symbol}</div></td>
+                                                                <td className="p-3 text-right">{formatNumber(Math.abs(h.shares))}</td>
+                                                                <td className="p-3 text-right text-slate-500">{formatNumber(h.price)}</td>
+                                                                <td className="p-3 text-right font-medium text-slate-700">{formatNumber(Math.abs(h.shares * h.price))}</td>
+                                                                <td className="p-3 text-center">
+                                                                   <button onClick={(e) => { e.stopPropagation(); handleAuthRequired(() => setDeleteConfirm({ id: h.id })); }} className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"><Trash2 size={16}/></button>
+                                                                </td>
+                                                             </tr>
+                                                         )
+                                                      });
+                                                  })()}
                                                </tbody>
                                             </table>
                                         </div>
@@ -1905,6 +1992,8 @@
               </main>
 
               {}
+              <CustomDialog isOpen={dialogState.isOpen} type={dialogState.type} title={dialogState.title} message={dialogState.message} onClose={closeDialog} onConfirm={dialogState.onConfirm} />
+
               <Modal isOpen={isAddMemberOpen} onClose={() => setIsAddMemberOpen(false)} title="新增家庭成員">
                  <div className="space-y-4">
                     <Input label="成員名稱" placeholder="例如：爸爸、媽媽" value={newMemberName} onChange={e => setNewMemberName(e.target.value)} />
@@ -1955,7 +2044,6 @@
 
               <Modal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} title="系統設定">
                  <div className="space-y-6">
-                    {/* 新增的報表匯出區塊 */}
                     <div>
                        <h4 className="font-bold text-slate-800 mb-2 flex items-center gap-2"><FileText size={18} className="text-blue-500"/> 報表匯出</h4>
                        <div className="grid grid-cols-2 gap-3">
@@ -1995,7 +2083,7 @@
                           {hasPin ? (
                              <div className="text-center space-y-3">
                                 <p className="text-emerald-600 font-medium flex items-center justify-center gap-2"><Lock size={16}/> 已啟用 PIN 碼保護</p>
-                                <Button variant="secondary" className="w-full text-sm" onClick={() => { setHasPin(false); setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security'), { pin: null }); }}>移除密碼</Button>
+                                <Button variant="secondary" className="w-full text-sm" onClick={() => { setHasPin(false); if(user) setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'security'), { pin: null }); }}>移除密碼</Button>
                              </div>
                           ) : (
                              <div className="space-y-3">
