@@ -1201,7 +1201,8 @@
 
                 for (const chunk of historyChunks) {
                     await Promise.all(chunk.map(async (symbol) => {
-                        const range = (!historicalPrices[symbol] || Object.keys(historicalPrices[symbol]).length < 10) ? '1y' : '1mo';
+                        // 將日常更新的區間從 '1mo' (一個月) 縮短為 '5d' (五天)，以加快傳輸與處理速度
+                        const range = (!historicalPrices[symbol] || Object.keys(historicalPrices[symbol]).length < 10) ? '1y' : '5d';
                         const historyMap = await fetchHistoryForSymbol(symbol, range);
                         
                         let combinedHistory = { ...(historicalPrices[symbol] || {}) };
