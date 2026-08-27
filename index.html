@@ -310,8 +310,14 @@
 
         const parseTwsePrice = (result) => {
              let price = parseFloat(result.z);
+             
+             // 新增：若盤中鎖死無成交 或 處於試撮階段，採用試撮價 (pz)
+             if (isNaN(price) && result.pz && result.pz !== '-') price = parseFloat(result.pz);
+             // 新增：若為漲停鎖死，買單滿載但無賣單，抓取最佳買價 (b)
              if (isNaN(price) && typeof result.b === 'string' && result.b !== '-') price = parseFloat(result.b.split('_')[0]);
+             // 新增：若為跌停鎖死，賣單滿載但無買單，抓取最佳賣價 (a)
              if (isNaN(price) && typeof result.a === 'string' && result.a !== '-') price = parseFloat(result.a.split('_')[0]);
+             // 若依然無價，採用昨收價
              if (isNaN(price) && result.y && result.y !== '-') price = parseFloat(result.y);
              
              const yesterday = parseFloat(result.y);
@@ -323,7 +329,7 @@
                  changePercent = (change / yesterday) * 100;
              }
              
-             return { price, change, changePercent, yesterday };
+             return { price: isNaN(price) ? 0 : price, change, changePercent, yesterday };
         };
 
         const fetchStockData = async (code, type) => {
@@ -348,21 +354,44 @@
                 }
             } catch (e) {}
 
-            // Yahoo Fallback (新增支援 .TWO 上櫃股票備援)
-            let yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${uCode}.TW?interval=1d`;
+            const yahooSymbol = `${uCode}.TW`; 
+            const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
             try {
                let data = await fetchWithDualProxy(yahooUrl);
                if (!data?.chart?.result) {
-                   yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${uCode}.TWO?interval=1d`;
-                   data = await fetchWithDualProxy(yahooUrl);
+                   const otcSymbol = `${uCode}.TWO`;
+                   const otcUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${otcSymbol}?interval=1d`;
+                   data = await fetchWithDualProxy(otcUrl);
                }
                
                if (data && data.chart && data.chart.result) {
                   const meta = data.chart.result[0].meta;
+                  const quotes = data.chart.result[0].indicators?.quote?.[0];
+                  
+                  let price = meta.regularMarketPrice;
+                  
+                  // 修正：當股票漲停/跌停鎖死時，Yahoo 偶爾會將 regularMarketPrice 回傳為 null，此時改從 close 陣列抓取最後一筆有效價格
+                  if (price === null || price === undefined || isNaN(price)) {
+                      if (quotes && quotes.close && quotes.close.length > 0) {
+                          const validCloses = quotes.close.filter(c => c !== null);
+                          if (validCloses.length > 0) price = validCloses[validCloses.length - 1];
+                      }
+                  }
+                  if (price === null || price === undefined || isNaN(price)) price = meta.previousClose;
+                  
+                  const yesterday = meta.chartPreviousClose || meta.previousClose;
+                  let change = 0;
+                  let changePercent = 0;
+                  
+                  if (price && yesterday) {
+                      change = price - yesterday;
+                      changePercent = (change / yesterday) * 100;
+                  }
+
                   return {
-                    price: meta.regularMarketPrice,
-                    change: meta.regularMarketPrice - meta.chartPreviousClose,
-                    changePercent: ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100,
+                    price: price,
+                    change: change,
+                    changePercent: changePercent,
                     name: uCode, 
                     source: 'Yahoo'
                   };
