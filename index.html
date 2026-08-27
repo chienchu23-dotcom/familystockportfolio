@@ -272,33 +272,40 @@
             }
         };
 
-        const fetchWithDualProxy = async (targetUrl) => {
+        const fetchWithDualProxy = async (targetUrl, timeoutMs = 3500) => {
             const cacheBustedUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
             const encodedUrl = encodeURIComponent(cacheBustedUrl);
             const timestamp = Date.now();
             
-            // 代理 1: AllOrigins (加上 4 秒逾時限制)
+            // 使用 Promise.any「競速模式」同時發送請求給三個 Proxy，誰最快傳回正確資料就用誰的！
+            const p1 = fetchWithTimeout(`https://api.allorigins.win/get?url=${encodedUrl}&t=${timestamp}`, timeoutMs)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.contents) {
+                        const parsed = JSON.parse(data.contents);
+                        if (parsed) return parsed;
+                    }
+                    throw new Error("AllOrigins failed");
+                });
+                
+            const p2 = fetchWithTimeout(`https://corsproxy.io/?${encodedUrl}`, timeoutMs)
+                .then(res => {
+                    if (res.ok) return res.json();
+                    throw new Error("CorsProxy failed");
+                });
+                
+            const p3 = fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, timeoutMs)
+                .then(res => {
+                    if (res.ok) return res.json();
+                    throw new Error("CodeTabs failed");
+                });
+
             try {
-              const response1 = await fetchWithTimeout(`https://api.allorigins.win/get?url=${encodedUrl}&t=${timestamp}`, 4000);
-              if (response1.ok) {
-                const data = await response1.json();
-                if (data.contents) return JSON.parse(data.contents);
-              }
-            } catch (e) {}
-            
-            // 代理 2: corsproxy.io (加上 4 秒逾時限制)
-            try {
-               const response2 = await fetchWithTimeout(`https://corsproxy.io/?${encodedUrl}`, 4000);
-               if (response2.ok) return await response2.json();
-            } catch (e) {}
-            
-            // 代理 3: CodeTabs (加上 4 秒逾時限制)
-            try {
-               const response3 = await fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, 4000);
-               if (response3.ok) return await response3.json();
-            } catch (e) {}
-            
-            return null;
+                // 只要有一個成功就會立刻 return，三個都失敗或超時才會進入 catch
+                return await Promise.any([p1, p2, p3]);
+            } catch (e) {
+                return null;
+            }
         };
 
         const parseTwsePrice = (result) => {
@@ -1184,11 +1191,11 @@
                     } catch (e) { chunkSuccess = false; }
 
                     if (!chunkSuccess) {
-                         for (const symbol of chunk) {
+                         // 將原本依序排隊的迴圈，改為「平行處理」，大幅減少等待時間
+                         await Promise.all(chunk.map(async (symbol) => {
                              const data = await fetchStockData(symbol);
                              if (data) stageStockUpdate(symbol, data.price, data.changePercent);
-                             await new Promise(r => setTimeout(r, 100)); 
-                         }
+                         }));
                     } else { await new Promise(r => setTimeout(r, 300)); }
                 }
 
