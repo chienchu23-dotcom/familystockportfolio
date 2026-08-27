@@ -263,6 +263,8 @@
             const cacheBustedUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
             const encodedUrl = encodeURIComponent(cacheBustedUrl);
             const timestamp = Date.now();
+            
+            // 代理 1: AllOrigins
             try {
               const response1 = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${timestamp}`);
               if (response1.ok) {
@@ -270,10 +272,19 @@
                 if (data.contents) return JSON.parse(data.contents);
               }
             } catch (e) {}
+            
+            // 代理 2: corsproxy.io
             try {
                const response2 = await fetch(`https://corsproxy.io/?${encodedUrl}`);
                if (response2.ok) return await response2.json();
-            } catch (e) { return null; }
+            } catch (e) {}
+            
+            // 代理 3: CodeTabs (新增第三重備援提高穩定度)
+            try {
+               const response3 = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`);
+               if (response3.ok) return await response3.json();
+            } catch (e) {}
+            
             return null;
         };
 
@@ -317,10 +328,15 @@
                 }
             } catch (e) {}
 
-            const yahooSymbol = `${uCode}.TW`; 
-            const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
+            // Yahoo Fallback (新增支援 .TWO 上櫃股票備援)
+            let yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${uCode}.TW?interval=1d`;
             try {
-               const data = await fetchWithDualProxy(yahooUrl);
+               let data = await fetchWithDualProxy(yahooUrl);
+               if (!data?.chart?.result) {
+                   yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${uCode}.TWO?interval=1d`;
+                   data = await fetchWithDualProxy(yahooUrl);
+               }
+               
                if (data && data.chart && data.chart.result) {
                   const meta = data.chart.result[0].meta;
                   return {
