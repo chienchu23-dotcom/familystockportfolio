@@ -1129,8 +1129,6 @@
 
           const handleUpdatePrices = async () => {
             if (!user || allHoldings.length === 0) return;
-            const userId = user.uid;
-
             if (hasPin && !isAuthenticated) {
                pendingActionRef.current = handleUpdatePrices;
                setShowUnlockModal(true);
@@ -1138,7 +1136,7 @@
             }
 
             setUpdatingPrices(true);
-            setPriceUpdateMsg("正在更新即時股價...");
+            setPriceUpdateMsg("正在透過官方開放資料同步最新收盤價...");
             
             try {
                 const inventory = {};
@@ -1156,134 +1154,95 @@
                     return;
                 }
 
+                // 直接拉取台灣證交所與櫃買中心官方 Open API (原生支援跨域，完全不需代理！)
+                const twseUrl = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL';
+                const tpexUrl = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes';
+
+                let twseData = [];
+                let tpexData = [];
+
+                try {
+                    // 平行發送兩個官方請求，大幅節省時間
+                    const [twseRes, tpexRes] = await Promise.all([
+                        fetch(twseUrl).catch(() => ({ ok: false })),
+                        fetch(tpexUrl).catch(() => ({ ok: false }))
+                    ]);
+                    
+                    if (twseRes.ok) twseData = await twseRes.json();
+                    if (tpexRes.ok) tpexData = await tpexRes.json();
+                } catch (e) {
+                    console.error("官方開放資料讀取失敗", e);
+                }
+
+                if (twseData.length === 0 && tpexData.length === 0) {
+                    setPriceUpdateMsg("無法連接至官方資料庫，請檢查網路狀態");
+                    setUpdatingPrices(false);
+                    return;
+                }
+
+                // 建立官方收盤價對照表
+                const officialPriceMap = {};
+
+                // 1. 解析上市資料
+                twseData.forEach(item => {
+                    const price = parseFloat(item.ClosingPrice);
+                    // 過濾掉可能的特殊字元 (例如除權息標記)
+                    const changeRaw = item.Change ? item.Change.replace(/[^0-9.-]/g, '') : "0";
+                    const change = parseFloat(changeRaw) || 0;
+                    
+                    if (!isNaN(price) && price > 0) {
+                        const prev = price - change; // 推算昨收
+                        const changePercent = prev > 0 ? (change / prev) * 100 : 0;
+                        officialPriceMap[item.Code] = { price, changePercent };
+                    }
+                });
+
+                // 2. 解析上櫃資料
+                tpexData.forEach(item => {
+                    const price = parseFloat(item.Close);
+                    const changeRaw = item.Change ? item.Change.replace(/[^0-9.-]/g, '') : "0";
+                    const change = parseFloat(changeRaw) || 0;
+                    
+                    if (!isNaN(price) && price > 0) {
+                        const prev = price - change;
+                        const changePercent = prev > 0 ? (change / prev) * 100 : 0;
+                        officialPriceMap[item.SecuritiesCompanyCode] = { price, changePercent };
+                    }
+                });
+
                 const batch = writeBatch(db);
                 const now = Math.floor(Date.now() / 1000);
                 const todayStr = getLocalYMD(); 
                 let successCount = 0;
-                const updatedDataMap = {}; 
-                
-                // 縮小批次至 5，避免 TWSE 網址過長直接被擋
-                const CHUNK_SIZE = 5; 
-                const chunks = [];
-                for (let i = 0; i < activeSymbols.length; i += CHUNK_SIZE) {
-                    chunks.push(activeSymbols.slice(i, i + CHUNK_SIZE));
-                }
 
-                const stageStockUpdate = (symbol, price, changePercent) => {
-                    if (updatedDataMap[symbol]) return;
-                    const targetDocs = allHoldings.filter(h => h.symbol === symbol);
-                    targetDocs.forEach(docData => {
-                        const docRef = doc(db, 'artifacts', appId, 'users', userId, 'holdings', docData.id);
-                        batch.update(docRef, { currentPrice: price, dailyChangePercent: changePercent, lastUpdateTimestamp: now });
-                    });
-                    updatedDataMap[symbol] = price; 
-                    successCount++;
-                };
+                // 將最新價格配對並寫入 Firebase
+                activeSymbols.forEach(symbol => {
+                    const quote = officialPriceMap[symbol];
+                    if (quote) {
+                        const targetDocs = allHoldings.filter(h => h.symbol === symbol);
+                        targetDocs.forEach(docData => {
+                            const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', docData.id);
+                            batch.update(docRef, { currentPrice: quote.price, dailyChangePercent: quote.changePercent, lastUpdateTimestamp: now });
+                        });
 
-                for (const chunk of chunks) {
-                    const query = chunk.map(s => `tse_${s}.tw|otc_${s}.tw`).join('|');
-                    const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
-                    
-                    let updatedInChunk = new Set();
-                    
-                    // 第一重防線：台灣證交所 API
-                    try {
-                        const data = await fetchWithDualProxy(twseUrl, 4500);
-                        if (data && data.msgArray) {
-                             data.msgArray.forEach(result => {
-                                 const symbol = result.c; 
-                                 if (chunk.includes(symbol)) {
-                                     const parsed = parseTwsePrice(result);
-                                     if (parsed.price > 0) {
-                                        stageStockUpdate(symbol, parsed.price, parsed.changePercent);
-                                        updatedInChunk.add(symbol);
-                                     }
-                                 }
-                             });
+                        // 將最新價直接補入現有歷史曲線的「今日」，不再發起耗時的歷史請求
+                        if (historicalPrices[symbol]) {
+                            let combinedHistory = { ...historicalPrices[symbol] };
+                            combinedHistory[todayStr] = quote.price;
+                            const historyDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'priceHistory', symbol);
+                            batch.set(historyDocRef, { history: combinedHistory, lastUpdated: now }, { merge: true });
                         }
-                    } catch (e) {}
-
-                    const missingSymbols = chunk.filter(s => !updatedInChunk.has(s));
-
-                    // 第二重防線：Yahoo V8 API
-                    if (missingSymbols.length > 0) {
-                         const yahooSymbols = missingSymbols.flatMap(s => [`${s}.TW`, `${s}.TWO`]).join(',');
-                         const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${yahooSymbols}`;
-                         try {
-                             const yData = await fetchWithDualProxy(yahooUrl, 4500);
-                             yData?.spark?.result?.forEach(item => {
-                                 const quote = item.response?.[0]?.meta;
-                                 if (quote && quote.regularMarketPrice > 0) {
-                                     const symMatch = quote.symbol.split('.')[0];
-                                     if (missingSymbols.includes(symMatch)) {
-                                         const prevClose = quote.previousClose || quote.chartPreviousClose;
-                                         const changePercent = prevClose ? ((quote.regularMarketPrice - prevClose) / prevClose) * 100 : 0;
-                                         stageStockUpdate(symMatch, quote.regularMarketPrice, changePercent);
-                                         updatedInChunk.add(symMatch);
-                                     }
-                                 }
-                             });
-                         } catch(e) {}
-                    }
-                    
-                    const stillMissingSymbols = chunk.filter(s => !updatedInChunk.has(s));
-                    
-                    // 第三重終極防線：Yahoo 網頁強制爬蟲 (免疫 API 封鎖)
-                    if (stillMissingSymbols.length > 0) {
-                        for (const symbol of stillMissingSymbols) {
-                            try {
-                                const htmlUrl = `https://tw.stock.yahoo.com/quote/${symbol}`;
-                                const html = await fetchWithDualProxy(htmlUrl, 4500);
-                                if (typeof html === 'string') {
-                                    const match = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{.*?\});/);
-                                    if (match) {
-                                        const stateStr = match[1];
-                                        const priceMatch = stateStr.match(/"regularMarketPrice":([0-9.]+)/);
-                                        const prevMatch = stateStr.match(/"regularMarketPreviousClose":([0-9.]+)/) || stateStr.match(/"previousClose":([0-9.]+)/);
-                                        if (priceMatch) {
-                                            const price = parseFloat(priceMatch[1]);
-                                            const prev = prevMatch ? parseFloat(prevMatch[1]) : price;
-                                            const changePercent = prev ? ((price - prev)/prev)*100 : 0;
-                                            stageStockUpdate(symbol, price, changePercent);
-                                        }
-                                    }
-                                }
-                            } catch(e) {}
-                        }
-                    }
-                    
-                    await new Promise(r => setTimeout(r, 400));
-                }
-
-                setPriceUpdateMsg("正在回補歷史波動曲線...");
-                const CHUNK_SIZE_HISTORY = 5; 
-                const historyChunks = [];
-                for (let i = 0; i < activeSymbols.length; i += CHUNK_SIZE_HISTORY) {
-                    historyChunks.push(activeSymbols.slice(i, i + CHUNK_SIZE_HISTORY));
-                }
-
-                for (const chunk of historyChunks) {
-                    await Promise.all(chunk.map(async (symbol) => {
-                        // 將日常更新的區間從 '1mo' (一個月) 縮短為 '5d' (五天)，以加快傳輸與處理速度
-                        const range = (!historicalPrices[symbol] || Object.keys(historicalPrices[symbol]).length < 10) ? '1y' : '5d';
-                        const historyMap = await fetchHistoryForSymbol(symbol, range);
                         
-                        let combinedHistory = { ...(historicalPrices[symbol] || {}) };
-                        if (historyMap) combinedHistory = { ...combinedHistory, ...historyMap };
-                        if (updatedDataMap[symbol]) combinedHistory[todayStr] = updatedDataMap[symbol];
-
-                        const historyDocRef = doc(db, 'artifacts', appId, 'users', userId, 'priceHistory', symbol);
-                        batch.set(historyDocRef, { history: combinedHistory, lastUpdated: now }, { merge: true }); 
-                    }));
-                    await new Promise(r => setTimeout(r, 200));
-                }
+                        successCount++;
+                    }
+                });
 
                 if (successCount > 0) {
                     await batch.commit();
-                    setPriceUpdateMsg(`更新完成：成功同步 ${successCount} 檔現價與歷史曲線`);
+                    setPriceUpdateMsg(`更新完成：成功同步 ${successCount} 檔官方收盤價`);
                     setLastUpdateTime(new Date());
                 } else {
-                    setPriceUpdateMsg("更新失敗或無資料變動");
+                    setPriceUpdateMsg("未找到相符的股票資料或股市尚未收盤");
                 }
             } catch (e) {
                 console.error("Update error", e);
