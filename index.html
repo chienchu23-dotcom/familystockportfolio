@@ -259,7 +259,7 @@
             return value;
         };
 
-        const fetchWithTimeout = async (url, timeoutMs = 4000) => {
+        const fetchWithTimeout = async (url, timeoutMs = 4500) => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
             try {
@@ -268,39 +268,44 @@
                 return response;
             } catch (error) {
                 clearTimeout(timeoutId);
-                throw error; // 包含 AbortError 讓外層去 catch 換下一個代理
+                throw error;
             }
         };
 
-        const fetchWithDualProxy = async (targetUrl, timeoutMs = 3500) => {
-            // 直接在目標 URL 加上時間戳，確保不管是哪個代理都不會存取到快取
-            const targetUrlWithTime = targetUrl + (targetUrl.includes('?') ? '&' : '?') + '_=' + Date.now();
-            const encodedUrl = encodeURIComponent(targetUrlWithTime);
+        const fetchWithDualProxy = async (targetUrl, timeoutMs = 5000) => {
+            // 加入更強力的隨機字串，絕對避開代理伺服器的快取
+            const cacheBustedUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + 'nocache=' + Date.now() + Math.random().toString(36).substring(7);
+            const encodedUrl = encodeURIComponent(cacheBustedUrl);
             
-            // 使用 Promise.any 競速模式，並確保非 JSON 的錯誤回應會被正確丟出以利換下一個代理
-            const p1 = fetchWithTimeout(`https://api.allorigins.win/raw?url=${encodedUrl}`, timeoutMs)
+            // 代理一：AllOrigins GET (穩定度高，會包裝成 JSON)
+            const p1 = fetchWithTimeout(`https://api.allorigins.win/get?url=${encodedUrl}`, timeoutMs)
                 .then(async res => {
-                    if (!res.ok) throw new Error("AOWin failed");
-                    const text = await res.text();
-                    return JSON.parse(text);
+                    if (!res.ok) throw new Error("AOWin Get failed");
+                    const data = await res.json();
+                    if (data && data.contents) {
+                        try { return JSON.parse(data.contents); } catch(e) { return data.contents; }
+                    }
+                    throw new Error("No contents");
                 });
                 
+            // 代理二：CodeTabs (速度快但偶爾會回傳 502 網頁)
             const p2 = fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, timeoutMs)
                 .then(async res => {
                     if (!res.ok) throw new Error("CodeTabs failed");
                     const text = await res.text();
-                    return JSON.parse(text);
+                    try { return JSON.parse(text); } catch(e) { return text; }
                 });
 
-            const p3 = fetchWithTimeout(`https://corsproxy.io/?${encodedUrl}`, timeoutMs)
+            // 代理三：CorsProxy.io (備用)
+            const p3 = fetchWithTimeout(`https://corsproxy.io/?url=${encodedUrl}`, timeoutMs)
                 .then(async res => {
                     if (!res.ok) throw new Error("CorsProxy failed");
                     const text = await res.text();
-                    return JSON.parse(text);
+                    try { return JSON.parse(text); } catch(e) { return text; }
                 });
 
             try {
-                // 只要有一個成功解析出 JSON 就會立刻 return
+                // 競速模式：三個代理誰先成功回傳正常資料，就用誰的！
                 return await Promise.any([p1, p2, p3]);
             } catch (e) {
                 return null;
@@ -337,43 +342,50 @@
             const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
             
             try {
-                const data = await fetchWithDualProxy(twseUrl, 3000);
+                const data = await fetchWithDualProxy(twseUrl, 4000);
                 const result = data?.msgArray?.find(item => item.c === uCode);
                 
                 if (result) {
                   const parsed = parseTwsePrice(result);
                   if (parsed.price > 0) {
-                      return {
-                        price: parsed.price,
-                        change: parsed.change,
-                        changePercent: parsed.changePercent,
-                        name: result.n,
-                        source: 'TWSE'
-                      };
+                      return { price: parsed.price, change: parsed.change, changePercent: parsed.changePercent, name: result.n, source: 'TWSE' };
                   }
                 }
             } catch (e) {}
 
-            // 改用不受 Crumb 限制的 Yahoo V8 Spark API 進行無阻擋抓取
             const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${uCode}.TW,${uCode}.TWO`;
             try {
-               const data = await fetchWithDualProxy(yahooUrl, 3000);
+               const data = await fetchWithDualProxy(yahooUrl, 4000);
                if (data?.spark?.result?.length > 0) {
-                  // 自動找出有效回傳 (.TW 或 .TWO) 且價格大於 0 的資料
                   const validQuote = data.spark.result.find(q => q.response?.[0]?.meta?.regularMarketPrice > 0)?.response[0].meta;
                   if (validQuote) {
                       const prevClose = validQuote.previousClose || validQuote.chartPreviousClose;
                       const changePercent = prevClose ? ((validQuote.regularMarketPrice - prevClose) / prevClose) * 100 : 0;
-                      return {
-                        price: validQuote.regularMarketPrice,
-                        change: validQuote.regularMarketPrice - prevClose,
-                        changePercent: changePercent,
-                        name: uCode, 
-                        source: 'Yahoo'
-                      };
+                      return { price: validQuote.regularMarketPrice, change: validQuote.regularMarketPrice - prevClose, changePercent: changePercent, name: uCode, source: 'Yahoo' };
                   }
                }
             } catch (e) {}
+            
+            // 第三重防線：強制網頁爬蟲
+            try {
+                const htmlUrl = `https://tw.stock.yahoo.com/quote/${uCode}`;
+                const html = await fetchWithDualProxy(htmlUrl, 4000);
+                if (typeof html === 'string') {
+                    const match = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{.*?\});/);
+                    if (match) {
+                        const stateStr = match[1];
+                        const priceMatch = stateStr.match(/"regularMarketPrice":([0-9.]+)/);
+                        const prevMatch = stateStr.match(/"regularMarketPreviousClose":([0-9.]+)/) || stateStr.match(/"previousClose":([0-9.]+)/);
+                        if (priceMatch) {
+                            const price = parseFloat(priceMatch[1]);
+                            const prev = prevMatch ? parseFloat(prevMatch[1]) : price;
+                            const changePercent = prev ? ((price - prev)/prev)*100 : 0;
+                            return { price, change: price - prev, changePercent, name: uCode, source: 'YahooHTML' };
+                        }
+                    }
+                }
+            } catch(e) {}
+
             return null; 
         };
 
@@ -1126,7 +1138,7 @@
             }
 
             setUpdatingPrices(true);
-            setPriceUpdateMsg("正在更新即時股價與歷史曲線...");
+            setPriceUpdateMsg("正在更新即時股價...");
             
             try {
                 const inventory = {};
@@ -1150,14 +1162,15 @@
                 let successCount = 0;
                 const updatedDataMap = {}; 
                 
-                const CHUNK_SIZE = 20; 
+                // 縮小批次至 5，避免 TWSE 網址過長直接被擋
+                const CHUNK_SIZE = 5; 
                 const chunks = [];
                 for (let i = 0; i < activeSymbols.length; i += CHUNK_SIZE) {
                     chunks.push(activeSymbols.slice(i, i + CHUNK_SIZE));
                 }
 
                 const stageStockUpdate = (symbol, price, changePercent) => {
-                    if (updatedDataMap[symbol]) return; // 防止重複更新
+                    if (updatedDataMap[symbol]) return;
                     const targetDocs = allHoldings.filter(h => h.symbol === symbol);
                     targetDocs.forEach(docData => {
                         const docRef = doc(db, 'artifacts', appId, 'users', userId, 'holdings', docData.id);
@@ -1171,66 +1184,75 @@
                     const query = chunk.map(s => `tse_${s}.tw|otc_${s}.tw`).join('|');
                     const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
                     
-                    let chunkSuccess = false;
+                    let updatedInChunk = new Set();
+                    
+                    // 第一重防線：台灣證交所 API
                     try {
-                        const data = await fetchWithDualProxy(twseUrl, 4000);
+                        const data = await fetchWithDualProxy(twseUrl, 4500);
                         if (data && data.msgArray) {
-                             chunkSuccess = true;
-                             const updatedInChunk = new Set();
                              data.msgArray.forEach(result => {
                                  const symbol = result.c; 
                                  if (chunk.includes(symbol)) {
                                      const parsed = parseTwsePrice(result);
-                                     if (!isNaN(parsed.price) && parsed.price > 0) {
+                                     if (parsed.price > 0) {
                                         stageStockUpdate(symbol, parsed.price, parsed.changePercent);
                                         updatedInChunk.add(symbol);
                                      }
                                  }
                              });
-                             const missingSymbols = chunk.filter(s => !updatedInChunk.has(s));
-                             // 如果 TWSE API 沒抓齊，用 Yahoo V8 Spark 備援
-                             if (missingSymbols.length > 0) {
-                                 const yahooSymbols = missingSymbols.flatMap(s => [`${s}.TW`, `${s}.TWO`]).join(',');
-                                 const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${yahooSymbols}`;
-                                 try {
-                                     const yData = await fetchWithDualProxy(yahooUrl, 4000);
-                                     yData?.spark?.result?.forEach(item => {
-                                         const quote = item.response?.[0]?.meta;
-                                         if (quote && quote.regularMarketPrice > 0) {
-                                             const symMatch = quote.symbol.split('.')[0];
-                                             if (missingSymbols.includes(symMatch)) {
-                                                 const prevClose = quote.previousClose || quote.chartPreviousClose;
-                                                 const changePercent = prevClose ? ((quote.regularMarketPrice - prevClose) / prevClose) * 100 : 0;
-                                                 stageStockUpdate(symMatch, quote.regularMarketPrice, changePercent);
-                                             }
-                                         }
-                                     });
-                                 } catch(e) {}
-                             }
                         }
-                    } catch (e) { chunkSuccess = false; }
+                    } catch (e) {}
 
-                    if (!chunkSuccess) {
-                         // 當 TWSE 完全失敗，啟動 Yahoo V8 Spark 大批量備援
-                         const yahooSymbols = chunk.flatMap(s => [`${s}.TW`, `${s}.TWO`]).join(',');
+                    const missingSymbols = chunk.filter(s => !updatedInChunk.has(s));
+
+                    // 第二重防線：Yahoo V8 API
+                    if (missingSymbols.length > 0) {
+                         const yahooSymbols = missingSymbols.flatMap(s => [`${s}.TW`, `${s}.TWO`]).join(',');
                          const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${yahooSymbols}`;
                          try {
-                             const yData = await fetchWithDualProxy(yahooUrl, 4000);
+                             const yData = await fetchWithDualProxy(yahooUrl, 4500);
                              yData?.spark?.result?.forEach(item => {
                                  const quote = item.response?.[0]?.meta;
                                  if (quote && quote.regularMarketPrice > 0) {
                                      const symMatch = quote.symbol.split('.')[0];
-                                     if (chunk.includes(symMatch)) {
+                                     if (missingSymbols.includes(symMatch)) {
                                          const prevClose = quote.previousClose || quote.chartPreviousClose;
                                          const changePercent = prevClose ? ((quote.regularMarketPrice - prevClose) / prevClose) * 100 : 0;
                                          stageStockUpdate(symMatch, quote.regularMarketPrice, changePercent);
+                                         updatedInChunk.add(symMatch);
                                      }
                                  }
                              });
                          } catch(e) {}
                     }
                     
-                    await new Promise(r => setTimeout(r, 400)); // 批次請求之間的停頓，保護代理伺服器
+                    const stillMissingSymbols = chunk.filter(s => !updatedInChunk.has(s));
+                    
+                    // 第三重終極防線：Yahoo 網頁強制爬蟲 (免疫 API 封鎖)
+                    if (stillMissingSymbols.length > 0) {
+                        for (const symbol of stillMissingSymbols) {
+                            try {
+                                const htmlUrl = `https://tw.stock.yahoo.com/quote/${symbol}`;
+                                const html = await fetchWithDualProxy(htmlUrl, 4500);
+                                if (typeof html === 'string') {
+                                    const match = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{.*?\});/);
+                                    if (match) {
+                                        const stateStr = match[1];
+                                        const priceMatch = stateStr.match(/"regularMarketPrice":([0-9.]+)/);
+                                        const prevMatch = stateStr.match(/"regularMarketPreviousClose":([0-9.]+)/) || stateStr.match(/"previousClose":([0-9.]+)/);
+                                        if (priceMatch) {
+                                            const price = parseFloat(priceMatch[1]);
+                                            const prev = prevMatch ? parseFloat(prevMatch[1]) : price;
+                                            const changePercent = prev ? ((price - prev)/prev)*100 : 0;
+                                            stageStockUpdate(symbol, price, changePercent);
+                                        }
+                                    }
+                                }
+                            } catch(e) {}
+                        }
+                    }
+                    
+                    await new Promise(r => setTimeout(r, 400));
                 }
 
                 setPriceUpdateMsg("正在回補歷史波動曲線...");
