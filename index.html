@@ -273,35 +273,34 @@
         };
 
         const fetchWithDualProxy = async (targetUrl, timeoutMs = 3500) => {
-            const cacheBustedUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
-            const encodedUrl = encodeURIComponent(cacheBustedUrl);
-            const timestamp = Date.now();
+            // 直接在目標 URL 加上時間戳，確保不管是哪個代理都不會存取到快取
+            const targetUrlWithTime = targetUrl + (targetUrl.includes('?') ? '&' : '?') + '_=' + Date.now();
+            const encodedUrl = encodeURIComponent(targetUrlWithTime);
             
-            // 使用 Promise.any「競速模式」同時發送請求給三個 Proxy，誰最快傳回正確資料就用誰的！
-            const p1 = fetchWithTimeout(`https://api.allorigins.win/get?url=${encodedUrl}&t=${timestamp}`, timeoutMs)
-                .then(res => res.json())
-                .then(data => {
-                    if (data.contents) {
-                        const parsed = JSON.parse(data.contents);
-                        if (parsed) return parsed;
-                    }
-                    throw new Error("AllOrigins failed");
+            // 使用 Promise.any 競速模式，並確保非 JSON 的錯誤回應會被正確丟出以利換下一個代理
+            const p1 = fetchWithTimeout(`https://api.allorigins.win/raw?url=${encodedUrl}`, timeoutMs)
+                .then(async res => {
+                    if (!res.ok) throw new Error("AOWin failed");
+                    const text = await res.text();
+                    return JSON.parse(text);
                 });
                 
-            const p2 = fetchWithTimeout(`https://corsproxy.io/?${encodedUrl}`, timeoutMs)
-                .then(res => {
-                    if (res.ok) return res.json();
-                    throw new Error("CorsProxy failed");
+            const p2 = fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, timeoutMs)
+                .then(async res => {
+                    if (!res.ok) throw new Error("CodeTabs failed");
+                    const text = await res.text();
+                    return JSON.parse(text);
                 });
-                
-            const p3 = fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, timeoutMs)
-                .then(res => {
-                    if (res.ok) return res.json();
-                    throw new Error("CodeTabs failed");
+
+            const p3 = fetchWithTimeout(`https://corsproxy.io/?${encodedUrl}`, timeoutMs)
+                .then(async res => {
+                    if (!res.ok) throw new Error("CorsProxy failed");
+                    const text = await res.text();
+                    return JSON.parse(text);
                 });
 
             try {
-                // 只要有一個成功就會立刻 return，三個都失敗或超時才會進入 catch
+                // 只要有一個成功解析出 JSON 就會立刻 return
                 return await Promise.any([p1, p2, p3]);
             } catch (e) {
                 return null;
@@ -355,19 +354,21 @@
                 }
             } catch (e) {}
 
-            // 改用 Yahoo V7 Quote API：抓取當下報價（包含漲跌停）比 Chart API 更穩定
-            const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${uCode}.TW,${uCode}.TWO`;
+            // 改用不受 Crumb 限制的 Yahoo V8 Spark API 進行無阻擋抓取
+            const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${uCode}.TW,${uCode}.TWO`;
             try {
                const data = await fetchWithDualProxy(yahooUrl, 3000);
-               if (data?.quoteResponse?.result?.length > 0) {
-                  // 自動找出有效回傳的那一個 (.TW 或 .TWO)
-                  const validQuote = data.quoteResponse.result.find(q => q.regularMarketPrice > 0);
+               if (data?.spark?.result?.length > 0) {
+                  // 自動找出有效回傳 (.TW 或 .TWO) 且價格大於 0 的資料
+                  const validQuote = data.spark.result.find(q => q.response?.[0]?.meta?.regularMarketPrice > 0)?.response[0].meta;
                   if (validQuote) {
+                      const prevClose = validQuote.previousClose || validQuote.chartPreviousClose;
+                      const changePercent = prevClose ? ((validQuote.regularMarketPrice - prevClose) / prevClose) * 100 : 0;
                       return {
                         price: validQuote.regularMarketPrice,
-                        change: validQuote.regularMarketChange || 0,
-                        changePercent: validQuote.regularMarketChangePercent || 0,
-                        name: validQuote.longName || validQuote.shortName || uCode, 
+                        change: validQuote.regularMarketPrice - prevClose,
+                        changePercent: changePercent,
+                        name: uCode, 
                         source: 'Yahoo'
                       };
                   }
@@ -1156,7 +1157,7 @@
                 }
 
                 const stageStockUpdate = (symbol, price, changePercent) => {
-                    if (updatedDataMap[symbol]) return; // 防止因備援機制重複更新
+                    if (updatedDataMap[symbol]) return; // 防止重複更新
                     const targetDocs = allHoldings.filter(h => h.symbol === symbol);
                     targetDocs.forEach(docData => {
                         const docRef = doc(db, 'artifacts', appId, 'users', userId, 'holdings', docData.id);
@@ -1187,16 +1188,21 @@
                                  }
                              });
                              const missingSymbols = chunk.filter(s => !updatedInChunk.has(s));
-                             // 如果 TWSE API 沒抓齊，用 Yahoo Batch 備援
+                             // 如果 TWSE API 沒抓齊，用 Yahoo V8 Spark 備援
                              if (missingSymbols.length > 0) {
                                  const yahooSymbols = missingSymbols.flatMap(s => [`${s}.TW`, `${s}.TWO`]).join(',');
-                                 const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${yahooSymbols}`;
+                                 const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${yahooSymbols}`;
                                  try {
                                      const yData = await fetchWithDualProxy(yahooUrl, 4000);
-                                     yData?.quoteResponse?.result?.forEach(quote => {
-                                         const symMatch = quote.symbol.split('.')[0];
-                                         if (missingSymbols.includes(symMatch) && quote.regularMarketPrice > 0) {
-                                             stageStockUpdate(symMatch, quote.regularMarketPrice, quote.regularMarketChangePercent || 0);
+                                     yData?.spark?.result?.forEach(item => {
+                                         const quote = item.response?.[0]?.meta;
+                                         if (quote && quote.regularMarketPrice > 0) {
+                                             const symMatch = quote.symbol.split('.')[0];
+                                             if (missingSymbols.includes(symMatch)) {
+                                                 const prevClose = quote.previousClose || quote.chartPreviousClose;
+                                                 const changePercent = prevClose ? ((quote.regularMarketPrice - prevClose) / prevClose) * 100 : 0;
+                                                 stageStockUpdate(symMatch, quote.regularMarketPrice, changePercent);
+                                             }
                                          }
                                      });
                                  } catch(e) {}
@@ -1205,15 +1211,20 @@
                     } catch (e) { chunkSuccess = false; }
 
                     if (!chunkSuccess) {
-                         // 當 TWSE 完全失敗，直接啟動 Yahoo 大批量備援 (避免代理伺服器過載)
+                         // 當 TWSE 完全失敗，啟動 Yahoo V8 Spark 大批量備援
                          const yahooSymbols = chunk.flatMap(s => [`${s}.TW`, `${s}.TWO`]).join(',');
-                         const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${yahooSymbols}`;
+                         const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${yahooSymbols}`;
                          try {
                              const yData = await fetchWithDualProxy(yahooUrl, 4000);
-                             yData?.quoteResponse?.result?.forEach(quote => {
-                                 const symMatch = quote.symbol.split('.')[0];
-                                 if (chunk.includes(symMatch) && quote.regularMarketPrice > 0) {
-                                     stageStockUpdate(symMatch, quote.regularMarketPrice, quote.regularMarketChangePercent || 0);
+                             yData?.spark?.result?.forEach(item => {
+                                 const quote = item.response?.[0]?.meta;
+                                 if (quote && quote.regularMarketPrice > 0) {
+                                     const symMatch = quote.symbol.split('.')[0];
+                                     if (chunk.includes(symMatch)) {
+                                         const prevClose = quote.previousClose || quote.chartPreviousClose;
+                                         const changePercent = prevClose ? ((quote.regularMarketPrice - prevClose) / prevClose) * 100 : 0;
+                                         stageStockUpdate(symMatch, quote.regularMarketPrice, changePercent);
+                                     }
                                  }
                              });
                          } catch(e) {}
