@@ -259,68 +259,28 @@
             return value;
         };
 
-        const fetchWithTimeout = async (url, timeoutMs = 4500) => {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-            try {
-                const response = await fetch(url, { signal: controller.signal });
-                clearTimeout(timeoutId);
-                return response;
-            } catch (error) {
-                clearTimeout(timeoutId);
-                throw error;
-            }
-        };
-
-        const fetchWithDualProxy = async (targetUrl, timeoutMs = 5000) => {
-            // 加入更強力的隨機字串，絕對避開代理伺服器的快取
-            const cacheBustedUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + 'nocache=' + Date.now() + Math.random().toString(36).substring(7);
+        const fetchWithDualProxy = async (targetUrl) => {
+            const cacheBustedUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
             const encodedUrl = encodeURIComponent(cacheBustedUrl);
-            
-            // 代理一：AllOrigins GET (穩定度高，會包裝成 JSON)
-            const p1 = fetchWithTimeout(`https://api.allorigins.win/get?url=${encodedUrl}`, timeoutMs)
-                .then(async res => {
-                    if (!res.ok) throw new Error("AOWin Get failed");
-                    const data = await res.json();
-                    if (data && data.contents) {
-                        try { return JSON.parse(data.contents); } catch(e) { return data.contents; }
-                    }
-                    throw new Error("No contents");
-                });
-                
-            // 代理二：CodeTabs (速度快但偶爾會回傳 502 網頁)
-            const p2 = fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, timeoutMs)
-                .then(async res => {
-                    if (!res.ok) throw new Error("CodeTabs failed");
-                    const text = await res.text();
-                    try { return JSON.parse(text); } catch(e) { return text; }
-                });
-
-            // 代理三：CorsProxy.io (備用)
-            const p3 = fetchWithTimeout(`https://corsproxy.io/?url=${encodedUrl}`, timeoutMs)
-                .then(async res => {
-                    if (!res.ok) throw new Error("CorsProxy failed");
-                    const text = await res.text();
-                    try { return JSON.parse(text); } catch(e) { return text; }
-                });
-
+            const timestamp = Date.now();
             try {
-                // 競速模式：三個代理誰先成功回傳正常資料，就用誰的！
-                return await Promise.any([p1, p2, p3]);
-            } catch (e) {
-                return null;
-            }
+              const response1 = await fetch(`https://api.allorigins.win/get?url=${encodedUrl}&t=${timestamp}`);
+              if (response1.ok) {
+                const data = await response1.json();
+                if (data.contents) return JSON.parse(data.contents);
+              }
+            } catch (e) {}
+            try {
+               const response2 = await fetch(`https://corsproxy.io/?${encodedUrl}`);
+               if (response2.ok) return await response2.json();
+            } catch (e) { return null; }
+            return null;
         };
 
         const parseTwsePrice = (result) => {
              let price = parseFloat(result.z);
-             
-             // 若盤中無成交 (z為空)，尋找試撮價 (pz)
-             if (isNaN(price) && result.pz && result.pz !== '-') price = parseFloat(result.pz);
-             // 漲停/跌停鎖死時，尋找掛單第一筆 (b買價, a賣價)
              if (isNaN(price) && typeof result.b === 'string' && result.b !== '-') price = parseFloat(result.b.split('_')[0]);
              if (isNaN(price) && typeof result.a === 'string' && result.a !== '-') price = parseFloat(result.a.split('_')[0]);
-             // 依然無價，抓昨收價(y)
              if (isNaN(price) && result.y && result.y !== '-') price = parseFloat(result.y);
              
              const yesterday = parseFloat(result.y);
@@ -332,7 +292,7 @@
                  changePercent = (change / yesterday) * 100;
              }
              
-             return { price: isNaN(price) ? 0 : price, change, changePercent, yesterday };
+             return { price, change, changePercent, yesterday };
         };
 
         const fetchStockData = async (code, type) => {
@@ -342,50 +302,36 @@
             const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
             
             try {
-                const data = await fetchWithDualProxy(twseUrl, 4000);
+                const data = await fetchWithDualProxy(twseUrl);
                 const result = data?.msgArray?.find(item => item.c === uCode);
                 
                 if (result) {
                   const parsed = parseTwsePrice(result);
-                  if (parsed.price > 0) {
-                      return { price: parsed.price, change: parsed.change, changePercent: parsed.changePercent, name: result.n, source: 'TWSE' };
-                  }
+                  return {
+                    price: parsed.price,
+                    change: parsed.change,
+                    changePercent: parsed.changePercent,
+                    name: result.n,
+                    source: 'TWSE'
+                  };
                 }
             } catch (e) {}
 
-            const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${uCode}.TW,${uCode}.TWO`;
+            const yahooSymbol = `${uCode}.TW`; 
+            const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
             try {
-               const data = await fetchWithDualProxy(yahooUrl, 4000);
-               if (data?.spark?.result?.length > 0) {
-                  const validQuote = data.spark.result.find(q => q.response?.[0]?.meta?.regularMarketPrice > 0)?.response[0].meta;
-                  if (validQuote) {
-                      const prevClose = validQuote.previousClose || validQuote.chartPreviousClose;
-                      const changePercent = prevClose ? ((validQuote.regularMarketPrice - prevClose) / prevClose) * 100 : 0;
-                      return { price: validQuote.regularMarketPrice, change: validQuote.regularMarketPrice - prevClose, changePercent: changePercent, name: uCode, source: 'Yahoo' };
-                  }
+               const data = await fetchWithDualProxy(yahooUrl);
+               if (data && data.chart && data.chart.result) {
+                  const meta = data.chart.result[0].meta;
+                  return {
+                    price: meta.regularMarketPrice,
+                    change: meta.regularMarketPrice - meta.chartPreviousClose,
+                    changePercent: ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100,
+                    name: uCode, 
+                    source: 'Yahoo'
+                  };
                }
             } catch (e) {}
-            
-            // 第三重防線：強制網頁爬蟲
-            try {
-                const htmlUrl = `https://tw.stock.yahoo.com/quote/${uCode}`;
-                const html = await fetchWithDualProxy(htmlUrl, 4000);
-                if (typeof html === 'string') {
-                    const match = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{.*?\});/);
-                    if (match) {
-                        const stateStr = match[1];
-                        const priceMatch = stateStr.match(/"regularMarketPrice":([0-9.]+)/);
-                        const prevMatch = stateStr.match(/"regularMarketPreviousClose":([0-9.]+)/) || stateStr.match(/"previousClose":([0-9.]+)/);
-                        if (priceMatch) {
-                            const price = parseFloat(priceMatch[1]);
-                            const prev = prevMatch ? parseFloat(prevMatch[1]) : price;
-                            const changePercent = prev ? ((price - prev)/prev)*100 : 0;
-                            return { price, change: price - prev, changePercent, name: uCode, source: 'YahooHTML' };
-                        }
-                    }
-                }
-            } catch(e) {}
-
             return null; 
         };
 
@@ -1136,7 +1082,7 @@
             }
 
             setUpdatingPrices(true);
-            setPriceUpdateMsg("正在透過代理節點逐筆同步最新股價...");
+            setPriceUpdateMsg("正在更新即時股價與歷史曲線...");
             
             try {
                 const inventory = {};
@@ -1158,71 +1104,91 @@
                 const now = Math.floor(Date.now() / 1000);
                 const todayStr = getLocalYMD(); 
                 let successCount = 0;
+                const updatedDataMap = {}; 
+                
+                const CHUNK_SIZE = 20; 
+                const chunks = [];
+                for (let i = 0; i < activeSymbols.length; i += CHUNK_SIZE) {
+                    chunks.push(activeSymbols.slice(i, i + CHUNK_SIZE));
+                }
 
-                // 逐一更新每檔股票，避免網址過長或被代理伺服器阻擋
-                for (const symbol of activeSymbols) {
-                    let quote = null;
-                    
-                    // 1. 嘗試透過代理抓取 TWSE MIS 即時資料
-                    const query = `tse_${symbol}.tw|otc_${symbol}.tw`;
+                const stageStockUpdate = (symbol, price, changePercent) => {
+                    const targetDocs = allHoldings.filter(h => h.symbol === symbol);
+                    targetDocs.forEach(docData => {
+                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', docData.id);
+                        batch.update(docRef, { currentPrice: price, dailyChangePercent: changePercent, lastUpdateTimestamp: now });
+                    });
+                    updatedDataMap[symbol] = price; 
+                    successCount++;
+                };
+
+                for (const chunk of chunks) {
+                    const query = chunk.map(s => `tse_${s}.tw|otc_${s}.tw`).join('|');
                     const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
                     
+                    let chunkSuccess = false;
                     try {
-                        const data = await fetchWithDualProxy(twseUrl, 4000);
-                        const result = data?.msgArray?.find(item => item.c === symbol);
-                        if (result) {
-                            const parsed = parseTwsePrice(result);
-                            if (parsed.price > 0) {
-                                quote = { price: parsed.price, changePercent: parsed.changePercent };
-                            }
+                        const data = await fetchWithDualProxy(twseUrl);
+                        if (data && data.msgArray) {
+                             chunkSuccess = true;
+                             const updatedInChunk = new Set();
+                             data.msgArray.forEach(result => {
+                                 const symbol = result.c; 
+                                 if (chunk.includes(symbol)) {
+                                     const parsed = parseTwsePrice(result);
+                                     if (!isNaN(parsed.price)) {
+                                        stageStockUpdate(symbol, parsed.price, parsed.changePercent);
+                                        updatedInChunk.add(symbol);
+                                     }
+                                 }
+                             });
+                             const missingSymbols = chunk.filter(s => !updatedInChunk.has(s));
+                             if (missingSymbols.length > 0) {
+                                 await Promise.all(missingSymbols.map(async (symbol) => {
+                                     const stockData = await fetchStockData(symbol); 
+                                     if (stockData) stageStockUpdate(symbol, stockData.price, stockData.changePercent);
+                                 }));
+                             }
                         }
-                    } catch (e) {}
+                    } catch (e) { chunkSuccess = false; }
 
-                    // 2. 若 TWSE 失敗，嘗試透過代理抓取 Yahoo Spark 輕量資料
-                    if (!quote) {
-                        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${symbol}.TW,${symbol}.TWO`;
-                        try {
-                            const yData = await fetchWithDualProxy(yahooUrl, 4000);
-                            if (yData?.spark?.result) {
-                                const validQuote = yData.spark.result.find(q => q.response?.[0]?.meta?.regularMarketPrice > 0)?.response[0].meta;
-                                if (validQuote) {
-                                    const prevClose = validQuote.previousClose || validQuote.chartPreviousClose;
-                                    const changePercent = prevClose ? ((validQuote.regularMarketPrice - prevClose) / prevClose) * 100 : 0;
-                                    quote = { price: validQuote.regularMarketPrice, changePercent };
-                                }
-                            }
-                        } catch (e) {}
-                    }
+                    if (!chunkSuccess) {
+                         for (const symbol of chunk) {
+                             const data = await fetchStockData(symbol);
+                             if (data) stageStockUpdate(symbol, data.price, data.changePercent);
+                             await new Promise(r => setTimeout(r, 100)); 
+                         }
+                    } else { await new Promise(r => setTimeout(r, 300)); }
+                }
 
-                    // 3. 寫入更新與歷史曲線
-                    if (quote) {
-                        const targetDocs = allHoldings.filter(h => h.symbol === symbol);
-                        targetDocs.forEach(docData => {
-                            const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'holdings', docData.id);
-                            batch.update(docRef, { currentPrice: quote.price, dailyChangePercent: quote.changePercent, lastUpdateTimestamp: now });
-                        });
+                setPriceUpdateMsg("正在回補歷史波動曲線...");
+                const CHUNK_SIZE_HISTORY = 5; 
+                const historyChunks = [];
+                for (let i = 0; i < activeSymbols.length; i += CHUNK_SIZE_HISTORY) {
+                    historyChunks.push(activeSymbols.slice(i, i + CHUNK_SIZE_HISTORY));
+                }
 
-                        // 直接將最新價寫入歷史紀錄的「今天」，省去重新抓取歷史資料的時間與 API 消耗
-                        if (historicalPrices[symbol]) {
-                            let combinedHistory = { ...historicalPrices[symbol] };
-                            combinedHistory[todayStr] = quote.price;
-                            const historyDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'priceHistory', symbol);
-                            batch.set(historyDocRef, { history: combinedHistory, lastUpdated: now }, { merge: true });
-                        }
+                for (const chunk of historyChunks) {
+                    await Promise.all(chunk.map(async (symbol) => {
+                        const range = (!historicalPrices[symbol] || Object.keys(historicalPrices[symbol]).length < 10) ? '1y' : '1mo';
+                        const historyMap = await fetchHistoryForSymbol(symbol, range);
                         
-                        successCount++;
-                    }
-                    
-                    // 停頓 0.3 秒，避免密集請求被代理伺服器封鎖
-                    await new Promise(r => setTimeout(r, 300));
+                        let combinedHistory = { ...(historicalPrices[symbol] || {}) };
+                        if (historyMap) combinedHistory = { ...combinedHistory, ...historyMap };
+                        if (updatedDataMap[symbol]) combinedHistory[todayStr] = updatedDataMap[symbol];
+
+                        const historyDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'priceHistory', symbol);
+                        batch.set(historyDocRef, { history: combinedHistory, lastUpdated: now }, { merge: true }); 
+                    }));
+                    await new Promise(r => setTimeout(r, 200));
                 }
 
                 if (successCount > 0) {
                     await batch.commit();
-                    setPriceUpdateMsg(`更新完成：成功同步 ${successCount} 檔股價`);
+                    setPriceUpdateMsg(`更新完成：成功同步 ${successCount} 檔現價與歷史曲線`);
                     setLastUpdateTime(new Date());
                 } else {
-                    setPriceUpdateMsg("網路代理均無回應，請稍後再試");
+                    setPriceUpdateMsg("更新失敗或無資料變動");
                 }
             } catch (e) {
                 console.error("Update error", e);
