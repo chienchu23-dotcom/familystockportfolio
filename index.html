@@ -1136,7 +1136,7 @@
             }
 
             setUpdatingPrices(true);
-            setPriceUpdateMsg("正在透過官方開放資料同步最新收盤價...");
+            setPriceUpdateMsg("正在透過代理節點逐筆同步最新股價...");
             
             try {
                 const inventory = {};
@@ -1154,70 +1154,47 @@
                     return;
                 }
 
-                // 直接拉取台灣證交所與櫃買中心官方 Open API (原生支援跨域，完全不需代理！)
-                const twseUrl = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL';
-                const tpexUrl = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes';
-
-                let twseData = [];
-                let tpexData = [];
-
-                try {
-                    // 平行發送兩個官方請求，大幅節省時間
-                    const [twseRes, tpexRes] = await Promise.all([
-                        fetch(twseUrl).catch(() => ({ ok: false })),
-                        fetch(tpexUrl).catch(() => ({ ok: false }))
-                    ]);
-                    
-                    if (twseRes.ok) twseData = await twseRes.json();
-                    if (tpexRes.ok) tpexData = await tpexRes.json();
-                } catch (e) {
-                    console.error("官方開放資料讀取失敗", e);
-                }
-
-                if (twseData.length === 0 && tpexData.length === 0) {
-                    setPriceUpdateMsg("無法連接至官方資料庫，請檢查網路狀態");
-                    setUpdatingPrices(false);
-                    return;
-                }
-
-                // 建立官方收盤價對照表
-                const officialPriceMap = {};
-
-                // 1. 解析上市資料
-                twseData.forEach(item => {
-                    const price = parseFloat(item.ClosingPrice);
-                    // 過濾掉可能的特殊字元 (例如除權息標記)
-                    const changeRaw = item.Change ? item.Change.replace(/[^0-9.-]/g, '') : "0";
-                    const change = parseFloat(changeRaw) || 0;
-                    
-                    if (!isNaN(price) && price > 0) {
-                        const prev = price - change; // 推算昨收
-                        const changePercent = prev > 0 ? (change / prev) * 100 : 0;
-                        officialPriceMap[item.Code] = { price, changePercent };
-                    }
-                });
-
-                // 2. 解析上櫃資料
-                tpexData.forEach(item => {
-                    const price = parseFloat(item.Close);
-                    const changeRaw = item.Change ? item.Change.replace(/[^0-9.-]/g, '') : "0";
-                    const change = parseFloat(changeRaw) || 0;
-                    
-                    if (!isNaN(price) && price > 0) {
-                        const prev = price - change;
-                        const changePercent = prev > 0 ? (change / prev) * 100 : 0;
-                        officialPriceMap[item.SecuritiesCompanyCode] = { price, changePercent };
-                    }
-                });
-
                 const batch = writeBatch(db);
                 const now = Math.floor(Date.now() / 1000);
                 const todayStr = getLocalYMD(); 
                 let successCount = 0;
 
-                // 將最新價格配對並寫入 Firebase
-                activeSymbols.forEach(symbol => {
-                    const quote = officialPriceMap[symbol];
+                // 逐一更新每檔股票，避免網址過長或被代理伺服器阻擋
+                for (const symbol of activeSymbols) {
+                    let quote = null;
+                    
+                    // 1. 嘗試透過代理抓取 TWSE MIS 即時資料
+                    const query = `tse_${symbol}.tw|otc_${symbol}.tw`;
+                    const twseUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${query}&json=1&delay=0`;
+                    
+                    try {
+                        const data = await fetchWithDualProxy(twseUrl, 4000);
+                        const result = data?.msgArray?.find(item => item.c === symbol);
+                        if (result) {
+                            const parsed = parseTwsePrice(result);
+                            if (parsed.price > 0) {
+                                quote = { price: parsed.price, changePercent: parsed.changePercent };
+                            }
+                        }
+                    } catch (e) {}
+
+                    // 2. 若 TWSE 失敗，嘗試透過代理抓取 Yahoo Spark 輕量資料
+                    if (!quote) {
+                        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${symbol}.TW,${symbol}.TWO`;
+                        try {
+                            const yData = await fetchWithDualProxy(yahooUrl, 4000);
+                            if (yData?.spark?.result) {
+                                const validQuote = yData.spark.result.find(q => q.response?.[0]?.meta?.regularMarketPrice > 0)?.response[0].meta;
+                                if (validQuote) {
+                                    const prevClose = validQuote.previousClose || validQuote.chartPreviousClose;
+                                    const changePercent = prevClose ? ((validQuote.regularMarketPrice - prevClose) / prevClose) * 100 : 0;
+                                    quote = { price: validQuote.regularMarketPrice, changePercent };
+                                }
+                            }
+                        } catch (e) {}
+                    }
+
+                    // 3. 寫入更新與歷史曲線
                     if (quote) {
                         const targetDocs = allHoldings.filter(h => h.symbol === symbol);
                         targetDocs.forEach(docData => {
@@ -1225,7 +1202,7 @@
                             batch.update(docRef, { currentPrice: quote.price, dailyChangePercent: quote.changePercent, lastUpdateTimestamp: now });
                         });
 
-                        // 將最新價直接補入現有歷史曲線的「今日」，不再發起耗時的歷史請求
+                        // 直接將最新價寫入歷史紀錄的「今天」，省去重新抓取歷史資料的時間與 API 消耗
                         if (historicalPrices[symbol]) {
                             let combinedHistory = { ...historicalPrices[symbol] };
                             combinedHistory[todayStr] = quote.price;
@@ -1235,14 +1212,17 @@
                         
                         successCount++;
                     }
-                });
+                    
+                    // 停頓 0.3 秒，避免密集請求被代理伺服器封鎖
+                    await new Promise(r => setTimeout(r, 300));
+                }
 
                 if (successCount > 0) {
                     await batch.commit();
-                    setPriceUpdateMsg(`更新完成：成功同步 ${successCount} 檔官方收盤價`);
+                    setPriceUpdateMsg(`更新完成：成功同步 ${successCount} 檔股價`);
                     setLastUpdateTime(new Date());
                 } else {
-                    setPriceUpdateMsg("未找到相符的股票資料或股市尚未收盤");
+                    setPriceUpdateMsg("網路代理均無回應，請稍後再試");
                 }
             } catch (e) {
                 console.error("Update error", e);
